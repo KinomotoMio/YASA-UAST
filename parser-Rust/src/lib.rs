@@ -33,6 +33,38 @@ impl fmt::Display for ParseArgsError {
     }
 }
 
+#[derive(Debug)]
+pub enum RunError {
+    InvalidInputPath { mode: &'static str, path: PathBuf },
+    Io {
+        context: String,
+        source: std::io::Error,
+    },
+    Serialize { source: serde_json::Error },
+}
+
+impl fmt::Display for RunError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidInputPath { mode, path } => {
+                write!(f, "{} mode expects a valid path: {}", mode, path.display())
+            }
+            Self::Io { context, source } => write!(f, "{context}: {source}"),
+            Self::Serialize { source } => write!(f, "failed to serialize output json: {source}"),
+        }
+    }
+}
+
+impl std::error::Error for RunError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidInputPath { .. } => None,
+            Self::Io { source, .. } => Some(source),
+            Self::Serialize { source } => Some(source),
+        }
+    }
+}
+
 pub fn usage() -> &'static str {
     "Usage: uast4rust -rootDir <path> -output <path> [-single]"
 }
@@ -93,7 +125,7 @@ pub fn parse_args() -> Result<CliArgs, ParseArgsError> {
     parse_args_from(env::args().skip(1))
 }
 
-pub fn run(cli: &CliArgs) -> Result<(), String> {
+pub fn run(cli: &CliArgs) -> Result<(), RunError> {
     if cli.single {
         parse_single_file(&cli.root_dir, &cli.output)
     } else {
@@ -101,16 +133,18 @@ pub fn run(cli: &CliArgs) -> Result<(), String> {
     }
 }
 
-fn parse_single_file(file: &Path, output: &Path) -> Result<(), String> {
+fn parse_single_file(file: &Path, output: &Path) -> Result<(), RunError> {
     if !file.is_file() {
-        return Err(format!(
-            "single mode expects a file path, got: {}",
-            file.display()
-        ));
+        return Err(RunError::InvalidInputPath {
+            mode: "single",
+            path: file.to_path_buf(),
+        });
     }
 
-    fs::read_to_string(file)
-        .map_err(|err| format!("failed to read file {}: {err}", file.display()))?;
+    fs::read_to_string(file).map_err(|source| RunError::Io {
+        context: format!("failed to read file {}", file.display()),
+        source,
+    })?;
 
     let file_key = file.to_string_lossy().to_string();
     let mut files = BTreeMap::new();
@@ -136,12 +170,12 @@ fn parse_single_file(file: &Path, output: &Path) -> Result<(), String> {
     write_output(output, &output_model)
 }
 
-fn parse_project(root_dir: &Path, output: &Path) -> Result<(), String> {
+fn parse_project(root_dir: &Path, output: &Path) -> Result<(), RunError> {
     if !root_dir.is_dir() {
-        return Err(format!(
-            "project mode expects a directory path, got: {}",
-            root_dir.display()
-        ));
+        return Err(RunError::InvalidInputPath {
+            mode: "project",
+            path: root_dir.to_path_buf(),
+        });
     }
 
     let output_model = Output {
@@ -154,22 +188,21 @@ fn parse_project(root_dir: &Path, output: &Path) -> Result<(), String> {
     write_output(output, &output_model)
 }
 
-fn write_output(output_path: &Path, output: &Output) -> Result<(), String> {
+fn write_output(output_path: &Path, output: &Output) -> Result<(), RunError> {
     if let Some(parent) = output_path.parent() {
         if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|err| {
-                format!(
-                    "failed to create output directory {}: {err}",
-                    parent.display()
-                )
+            fs::create_dir_all(parent).map_err(|source| RunError::Io {
+                context: format!("failed to create output directory {}", parent.display()),
+                source,
             })?;
         }
     }
 
-    let json = serde_json::to_vec(output)
-        .map_err(|err| format!("failed to serialize output json: {err}"))?;
-    fs::write(output_path, json)
-        .map_err(|err| format!("failed to write output {}: {err}", output_path.display()))
+    let json = serde_json::to_vec(output).map_err(|source| RunError::Serialize { source })?;
+    fs::write(output_path, json).map_err(|source| RunError::Io {
+        context: format!("failed to write output {}", output_path.display()),
+        source,
+    })
 }
 
 #[cfg(test)]
