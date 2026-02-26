@@ -141,7 +141,7 @@ fn parse_single_file(file: &Path, output: &Path) -> Result<(), RunError> {
         });
     }
 
-    fs::read_to_string(file).map_err(|source| RunError::Io {
+    fs::File::open(file).map_err(|source| RunError::Io {
         context: format!("failed to read file {}", file.display()),
         source,
     })?;
