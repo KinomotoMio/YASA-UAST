@@ -51,13 +51,13 @@ where
         match arg.as_str() {
             "-rootDir" | "--rootDir" => {
                 let value = iter.next().ok_or_else(|| {
-                    ParseArgsError::Message("Missing value for -rootDir".to_string())
+                    ParseArgsError::Message(format!("Missing value for '{}'", arg))
                 })?;
                 root_dir = Some(PathBuf::from(value));
             }
             "-output" | "--output" => {
                 let value = iter.next().ok_or_else(|| {
-                    ParseArgsError::Message("Missing value for -output".to_string())
+                    ParseArgsError::Message(format!("Missing value for '{}'", arg))
                 })?;
                 output = Some(PathBuf::from(value));
             }
