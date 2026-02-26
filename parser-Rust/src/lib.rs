@@ -1,5 +1,6 @@
 mod model;
 
+use clap::{error::ErrorKind, Parser};
 pub use model::{CompileUnit, NodeInfo, Output, PackagePathInfo, LANGUAGE};
 use std::collections::BTreeMap;
 use std::env;
@@ -11,10 +12,18 @@ const SINGLE_FILE_PACKAGE_NAME: &str = "__single__";
 const SINGLE_FILE_MODULE_NAME: &str = "__single_module__";
 const UNKNOWN_MODULE_NAME: &str = "__unknown_module__";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+#[command(
+    name = "uast4rust",
+    disable_help_subcommand = true,
+    override_usage = "uast4rust -rootDir <path> -output <path> [-single]"
+)]
 pub struct CliArgs {
+    #[arg(long = "rootDir", value_name = "path")]
     pub root_dir: PathBuf,
+    #[arg(long = "output", value_name = "path")]
     pub output: PathBuf,
+    #[arg(long = "single", default_value_t = false)]
     pub single: bool,
 }
 
@@ -35,12 +44,17 @@ impl fmt::Display for ParseArgsError {
 
 #[derive(Debug)]
 pub enum RunError {
-    InvalidInputPath { mode: &'static str, path: PathBuf },
+    InvalidInputPath {
+        mode: &'static str,
+        path: PathBuf,
+    },
     Io {
         context: String,
         source: std::io::Error,
     },
-    Serialize { source: serde_json::Error },
+    Serialize {
+        source: serde_json::Error,
+    },
 }
 
 impl fmt::Display for RunError {
@@ -74,55 +88,31 @@ where
     I: IntoIterator<Item = S>,
     S: Into<String>,
 {
-    let mut root_dir: Option<PathBuf> = None;
-    let mut output: Option<PathBuf> = None;
-    let mut single = false;
-    let mut iter = args.into_iter().map(Into::into);
+    let mut argv = vec!["uast4rust".to_string()];
+    argv.extend(args.into_iter().map(Into::into).map(normalize_legacy_flag));
 
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "-rootDir" | "--rootDir" => {
-                let value = iter.next().ok_or_else(|| {
-                    ParseArgsError::Message(format!("Missing value for '{}'", arg))
-                })?;
-                root_dir = Some(PathBuf::from(value));
+    match CliArgs::try_parse_from(argv) {
+        Ok(cli) => Ok(cli),
+        Err(err) => match err.kind() {
+            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
+                Err(ParseArgsError::HelpRequested)
             }
-            "-output" | "--output" => {
-                let value = iter.next().ok_or_else(|| {
-                    ParseArgsError::Message(format!("Missing value for '{}'", arg))
-                })?;
-                output = Some(PathBuf::from(value));
-            }
-            "-single" | "--single" => {
-                single = true;
-            }
-            "-h" | "--help" => {
-                return Err(ParseArgsError::HelpRequested);
-            }
-            unknown => {
-                return Err(ParseArgsError::Message(format!(
-                    "Unknown argument: {unknown}"
-                )));
-            }
-        }
+            _ => Err(ParseArgsError::Message(err.to_string())),
+        },
     }
-
-    let root_dir = root_dir.ok_or_else(|| {
-        ParseArgsError::Message(format!("Missing required argument: -rootDir\n{}", usage()))
-    })?;
-    let output = output.ok_or_else(|| {
-        ParseArgsError::Message(format!("Missing required argument: -output\n{}", usage()))
-    })?;
-
-    Ok(CliArgs {
-        root_dir,
-        output,
-        single,
-    })
 }
 
 pub fn parse_args() -> Result<CliArgs, ParseArgsError> {
     parse_args_from(env::args().skip(1))
+}
+
+fn normalize_legacy_flag(arg: String) -> String {
+    match arg.as_str() {
+        "-rootDir" => "--rootDir".to_string(),
+        "-output" => "--output".to_string(),
+        "-single" => "--single".to_string(),
+        _ => arg,
+    }
 }
 
 pub fn run(cli: &CliArgs) -> Result<(), RunError> {
@@ -229,6 +219,6 @@ mod tests {
         let args = vec!["-rootDir", "/tmp/example.rs"];
         let err = parse_args_from(args).expect_err("missing output should fail");
         assert!(matches!(err, ParseArgsError::Message(_)));
-        assert!(err.to_string().contains("-output"));
+        assert!(err.to_string().contains("output"));
     }
 }
