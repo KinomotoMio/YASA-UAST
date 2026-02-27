@@ -711,7 +711,9 @@ fn lower_match(expr_match: &ExprMatch) -> Option<Value> {
 fn lower_match_with_guards(discriminant: &Value, arms: &[Arm]) -> Option<Value> {
     let mut alternative = Value::Null;
     for arm in arms.iter().rev() {
-        let consequent = lower_expr(arm.body.as_ref()).unwrap_or_else(empty_scoped_statement);
+        let consequent = lower_expr(arm.body.as_ref())
+            .map(ensure_scoped_statement)
+            .unwrap_or_else(empty_scoped_statement);
         let condition = lower_match_arm_condition(
             discriminant,
             &arm.pat,
@@ -1098,6 +1100,13 @@ fn scoped_statement(body: Vec<Value>) -> Value {
         "body": body,
         "id": Value::Null,
     })
+}
+
+fn ensure_scoped_statement(instruction: Value) -> Value {
+    match instruction.get("type").and_then(Value::as_str) {
+        Some("ScopedStatement") => instruction,
+        _ => scoped_statement(vec![instruction]),
+    }
 }
 
 fn empty_scoped_statement() -> Value {

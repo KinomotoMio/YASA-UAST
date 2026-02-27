@@ -563,6 +563,14 @@ fn single_mode_lowers_match_guard_as_if_else_chain() {
         first_test_left.get("operator").and_then(Value::as_str),
         Some("==")
     );
+    let first_consequent = first_if
+        .get("consequent")
+        .and_then(Value::as_object)
+        .expect("first if consequent");
+    assert_eq!(
+        first_consequent.get("type").and_then(Value::as_str),
+        Some("ScopedStatement")
+    );
 
     let second_if = first_if
         .get("alternative")
@@ -579,6 +587,22 @@ fn single_mode_lowers_match_guard_as_if_else_chain() {
     assert_eq!(
         second_test.get("operator").and_then(Value::as_str),
         Some("==")
+    );
+    let second_consequent = second_if
+        .get("consequent")
+        .and_then(Value::as_object)
+        .expect("second if consequent");
+    assert_eq!(
+        second_consequent.get("type").and_then(Value::as_str),
+        Some("ScopedStatement")
+    );
+    let second_alternative = second_if
+        .get("alternative")
+        .and_then(Value::as_object)
+        .expect("second if alternative");
+    assert_eq!(
+        second_alternative.get("type").and_then(Value::as_str),
+        Some("ScopedStatement")
     );
 }
 
