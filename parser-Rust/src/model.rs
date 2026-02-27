@@ -29,7 +29,7 @@ pub struct NodeInfo {
     pub package_name: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct CompileUnit {
     #[serde(rename = "type")]

@@ -262,6 +262,8 @@ fn parse_project(root_dir: &Path, output: &Path) -> Result<(), RunError> {
 
     let mut manifests = discover_cargo_toml(root_dir)?;
     manifests.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+    let mut source_files = discover_rust_sources(root_dir, &manifests)?;
+    source_files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
 
     let module_name = manifests
         .iter()
@@ -272,7 +274,7 @@ fn parse_project(root_dir: &Path, output: &Path) -> Result<(), RunError> {
         .map(|m| m.rel_path.clone())
         .unwrap_or_default();
     let num_of_cargo_toml = manifests.len();
-    let package_info = build_package_info(&manifests);
+    let package_info = build_package_info(&manifests, &source_files);
 
     let output_model = Output {
         package_info,
@@ -1161,6 +1163,13 @@ struct CargoManifestInfo {
     package_name: Option<String>,
 }
 
+#[derive(Debug)]
+struct SourceFileInfo {
+    rel_path: String,
+    compile_unit: CompileUnit,
+    package_name: String,
+}
+
 fn discover_cargo_toml(root_dir: &Path) -> Result<Vec<CargoManifestInfo>, RunError> {
     let mut found_paths = Vec::new();
     walk_for_cargo_toml(root_dir, &mut found_paths)?;
@@ -1248,10 +1257,16 @@ fn parse_package_name_from_manifest(manifest_path: &Path) -> Result<Option<Strin
     Ok(name)
 }
 
-fn build_package_info(manifests: &[CargoManifestInfo]) -> PackagePathInfo {
+fn build_package_info(
+    manifests: &[CargoManifestInfo],
+    source_files: &[SourceFileInfo],
+) -> PackagePathInfo {
     let mut root = PackagePathInfo::empty_root();
     for manifest in manifests {
         insert_manifest_into_tree(&mut root, manifest);
+    }
+    for source in source_files {
+        insert_source_into_tree(&mut root, source);
     }
     root
 }
@@ -1288,6 +1303,138 @@ fn insert_manifest_into_tree(root: &mut PackagePathInfo, manifest: &CargoManifes
             package_name,
         },
     );
+}
+
+fn insert_source_into_tree(root: &mut PackagePathInfo, source: &SourceFileInfo) {
+    let mut node = root;
+    let parts: Vec<&str> = source
+        .rel_path
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return;
+    }
+    for part in &parts[..parts.len().saturating_sub(1)] {
+        node = node
+            .subs
+            .entry((*part).to_string())
+            .or_insert_with(|| PackagePathInfo {
+                path_name: (*part).to_string(),
+                files: BTreeMap::new(),
+                subs: BTreeMap::new(),
+            });
+    }
+    node.files.insert(
+        source.rel_path.clone(),
+        NodeInfo {
+            node: CompileUnit {
+                uri: source.rel_path.clone(),
+                ..source.compile_unit.clone()
+            },
+            package_name: source.package_name.clone(),
+        },
+    );
+}
+
+fn discover_rust_sources(
+    root_dir: &Path,
+    manifests: &[CargoManifestInfo],
+) -> Result<Vec<SourceFileInfo>, RunError> {
+    let mut found_paths = Vec::new();
+    walk_for_rust_sources(root_dir, &mut found_paths)?;
+    let mut source_files = Vec::with_capacity(found_paths.len());
+
+    for source_path in found_paths {
+        let rel_path = source_rel_path(root_dir, &source_path);
+        let package_name = nearest_manifest_package_name(&rel_path, manifests);
+        let compile_unit = lower_project_source_file(&source_path, rel_path.clone())?;
+        source_files.push(SourceFileInfo {
+            rel_path,
+            compile_unit,
+            package_name,
+        });
+    }
+
+    Ok(source_files)
+}
+
+fn walk_for_rust_sources(dir: &Path, found_paths: &mut Vec<PathBuf>) -> Result<(), RunError> {
+    let entries = fs::read_dir(dir).map_err(|source| RunError::Io {
+        context: format!("failed to read directory {}", dir.display()),
+        source,
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|source| RunError::Io {
+            context: format!("failed to read directory entry in {}", dir.display()),
+            source,
+        })?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|source| RunError::Io {
+            context: format!("failed to inspect file type {}", path.display()),
+            source,
+        })?;
+
+        if file_type.is_dir() {
+            if should_skip_dir(path.file_name()) {
+                continue;
+            }
+            walk_for_rust_sources(&path, found_paths)?;
+            continue;
+        }
+
+        if file_type.is_file() && path.extension() == Some(OsStr::new("rs")) {
+            found_paths.push(path);
+        }
+    }
+
+    Ok(())
+}
+
+fn source_rel_path(root_dir: &Path, source_path: &Path) -> String {
+    let rel = source_path
+        .strip_prefix(root_dir)
+        .expect("discovered source should be inside root_dir");
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+    format!("/{rel_str}")
+}
+
+fn nearest_manifest_package_name(source_rel_path: &str, manifests: &[CargoManifestInfo]) -> String {
+    let mut sorted_manifests = manifests.iter().collect::<Vec<_>>();
+    sorted_manifests.sort_by(|a, b| b.rel_path.len().cmp(&a.rel_path.len()));
+
+    for manifest in sorted_manifests {
+        let Some(manifest_dir) = manifest.rel_path.strip_suffix("/Cargo.toml") else {
+            continue;
+        };
+        let in_manifest_tree = if manifest_dir.is_empty() {
+            source_rel_path.starts_with('/')
+        } else {
+            source_rel_path == manifest_dir
+                || source_rel_path.starts_with(&format!("{manifest_dir}/"))
+        };
+        if in_manifest_tree {
+            return manifest
+                .package_name
+                .clone()
+                .unwrap_or_else(|| UNKNOWN_MODULE_NAME.to_string());
+        }
+    }
+
+    UNKNOWN_MODULE_NAME.to_string()
+}
+
+fn lower_project_source_file(path: &Path, rel_path: String) -> Result<CompileUnit, RunError> {
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return Ok(CompileUnit::empty(rel_path)),
+    };
+    let parsed = match syn::parse_file(&source) {
+        Ok(file) => file,
+        Err(_) => return Ok(CompileUnit::empty(rel_path)),
+    };
+    Ok(lower_single_file_uast(&parsed, rel_path))
 }
 
 fn write_output(output_path: &Path, output: &Output) -> Result<(), RunError> {
