@@ -345,8 +345,10 @@ fn parse_package_name_from_manifest(manifest_path: &Path) -> Result<Option<Strin
         .get("package")
         .and_then(|v| v.get("name"))
         .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
         .map(str::to_string);
-    Ok(name.filter(|name| !name.trim().is_empty()))
+    Ok(name)
 }
 
 fn build_package_info(manifests: &[CargoManifestInfo]) -> PackagePathInfo {
