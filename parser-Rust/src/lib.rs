@@ -376,15 +376,19 @@ fn lower_unnamed_struct_field(index: usize, field: &Field) -> Value {
     )
 }
 
-fn lower_fn_arg(arg: &FnArg) -> Value {
+fn lower_fn_arg(arg: &FnArg) -> Option<Value> {
     match arg {
         FnArg::Typed(pat_ty) => {
-            let Some(name) = extract_binding_name(&pat_ty.pat) else {
-                return Value::Null;
-            };
-            variable_declaration(identifier(name), None, lower_type(&pat_ty.ty), false, false)
+            let name = extract_binding_name(&pat_ty.pat)?;
+            Some(variable_declaration(
+                identifier(name),
+                None,
+                lower_type(&pat_ty.ty),
+                false,
+                false,
+            ))
         }
-        FnArg::Receiver(_) => Value::Null,
+        FnArg::Receiver(_) => None,
     }
 }
 
