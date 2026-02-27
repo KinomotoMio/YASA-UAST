@@ -416,6 +416,9 @@ fn lower_single_pattern_local(local: &Local) -> Option<Value> {
         .init
         .as_ref()
         .and_then(|local_init| lower_expr(&local_init.expr));
+    if name == "_" {
+        return init;
+    }
     let var_type = explicit_type.map(lower_type).unwrap_or_else(dynamic_type);
     let cloned = init.is_some();
     Some(variable_declaration(

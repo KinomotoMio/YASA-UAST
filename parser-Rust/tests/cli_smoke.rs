@@ -371,6 +371,11 @@ fn single_mode_preserves_wildcard_let_initializer_call() {
         count_nodes_of_type(&json, "CallExpression") >= 1,
         "expected at least one CallExpression in lowered output"
     );
+    let serialized = serde_json::to_string(&json).expect("serialize output");
+    assert!(
+        !serialized.contains("\"name\":\"_\""),
+        "wildcard single binding should not produce identifier '_' in UAST"
+    );
 }
 
 #[test]
