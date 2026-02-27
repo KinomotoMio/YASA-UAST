@@ -361,8 +361,8 @@ fn lower_struct_field(field: &Field) -> Value {
     let name = field
         .ident
         .as_ref()
-        .map(|ident| ident.to_string())
-        .unwrap_or_else(|| "__field__".to_string());
+        .expect("fields in a named struct should have an identifier")
+        .to_string();
     variable_declaration(identifier(name), None, lower_type(&field.ty), false, false)
 }
 
