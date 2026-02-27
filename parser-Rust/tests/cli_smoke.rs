@@ -450,6 +450,74 @@ fn single_mode_treats_match_binding_pattern_as_default_case() {
 }
 
 #[test]
+fn single_mode_lowers_match_guard_as_if_else_chain() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_file = temp.path().join("match_guard.rs");
+    fs::write(
+        &source_file,
+        "fn f(v: i32, cond: bool) -> i32 { match v { 1 if cond => return 10, 1 => return 20, _ => return 30, } }\n",
+    )
+    .expect("write source");
+    let output_file = temp.path().join("out").join("match_guard.json");
+
+    let out = run_cli(&[
+        "-rootDir",
+        source_file.to_str().expect("utf8 path"),
+        "-output",
+        output_file.to_str().expect("utf8 path"),
+        "-single",
+    ]);
+    assert!(
+        out.status.success(),
+        "cli failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json_bytes = fs::read(&output_file).expect("read output");
+    let json: Value = serde_json::from_slice(&json_bytes).expect("valid json");
+    assert_eq!(
+        count_nodes_of_type(&json, "SwitchStatement"),
+        0,
+        "guarded match should lower to if/else chain"
+    );
+
+    let first_if = find_first_node_by_type(&json, "IfStatement").expect("first IfStatement");
+    let first_test = first_if
+        .get("test")
+        .and_then(Value::as_object)
+        .expect("first if test");
+    assert_eq!(
+        first_test.get("operator").and_then(Value::as_str),
+        Some("&&")
+    );
+    let first_test_left = first_test
+        .get("left")
+        .and_then(Value::as_object)
+        .expect("first if left");
+    assert_eq!(
+        first_test_left.get("operator").and_then(Value::as_str),
+        Some("==")
+    );
+
+    let second_if = first_if
+        .get("alternative")
+        .and_then(Value::as_object)
+        .expect("second IfStatement");
+    assert_eq!(
+        second_if.get("type").and_then(Value::as_str),
+        Some("IfStatement")
+    );
+    let second_test = second_if
+        .get("test")
+        .and_then(Value::as_object)
+        .expect("second if test");
+    assert_eq!(
+        second_test.get("operator").and_then(Value::as_str),
+        Some("==")
+    );
+}
+
+#[test]
 fn single_mode_ignores_wildcard_in_for_tuple_binding() {
     let temp = tempfile::tempdir().expect("tempdir");
     let source_file = temp.path().join("for_tuple_wild.rs");

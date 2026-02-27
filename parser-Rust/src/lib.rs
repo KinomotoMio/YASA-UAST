@@ -9,7 +9,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use syn::{
-    BinOp, Block, Expr, ExprAssign, ExprBinary, ExprBlock, ExprBreak, ExprCall, ExprContinue,
+    Arm, BinOp, Block, Expr, ExprAssign, ExprBinary, ExprBlock, ExprBreak, ExprCall, ExprContinue,
     ExprField, ExprForLoop, ExprIf, ExprLit, ExprLoop, ExprMatch, ExprMethodCall, ExprPath,
     ExprRange, ExprReference, ExprReturn, ExprTuple, ExprUnary, ExprWhile, Field, Fields, FnArg,
     Item, ItemFn, ItemStruct, Lit, Local, Pat, PatTuple, RangeLimits, ReturnType, Stmt, Type, UnOp,
@@ -685,12 +685,13 @@ fn lower_if_alternative(else_expr: &Expr) -> Option<Value> {
 
 fn lower_match(expr_match: &ExprMatch) -> Option<Value> {
     let discriminant = lower_expr(&expr_match.expr)?;
+    if expr_match.arms.iter().any(|arm| arm.guard.is_some()) {
+        return lower_match_with_guards(&discriminant, &expr_match.arms);
+    }
+
     let mut cases = Vec::new();
     for arm in &expr_match.arms {
-        let body = lower_match_arm_body(
-            arm.body.as_ref(),
-            arm.guard.as_ref().map(|(_, g)| g.as_ref()),
-        );
+        let body = lower_expr(arm.body.as_ref()).unwrap_or_else(empty_scoped_statement);
         let tests = lower_match_arm_tests(&arm.pat);
         if tests.is_empty() {
             cases.push(case_clause(None, body.clone()));
@@ -707,17 +708,67 @@ fn lower_match(expr_match: &ExprMatch) -> Option<Value> {
     }))
 }
 
-fn lower_match_arm_body(body: &Expr, guard: Option<&Expr>) -> Value {
-    let lowered_body = lower_expr(body).unwrap_or_else(empty_scoped_statement);
-    let Some(guard_expr) = guard.and_then(lower_expr) else {
-        return lowered_body;
+fn lower_match_with_guards(discriminant: &Value, arms: &[Arm]) -> Option<Value> {
+    let mut alternative = Value::Null;
+    for arm in arms.iter().rev() {
+        let consequent = lower_expr(arm.body.as_ref()).unwrap_or_else(empty_scoped_statement);
+        let condition = lower_match_arm_condition(
+            discriminant,
+            &arm.pat,
+            arm.guard.as_ref().map(|(_, guard)| guard.as_ref()),
+        )?;
+        alternative = match condition {
+            Some(test) => json!({
+                "type": "IfStatement",
+                "test": test,
+                "consequent": consequent,
+                "alternative": alternative,
+            }),
+            None => consequent,
+        };
+    }
+    if alternative.is_null() {
+        return Some(empty_scoped_statement());
+    }
+    Some(alternative)
+}
+
+fn lower_match_arm_condition(
+    discriminant: &Value,
+    pat: &Pat,
+    guard: Option<&Expr>,
+) -> Option<Option<Value>> {
+    let pattern_test = lower_match_pattern_condition(discriminant, pat);
+    let guard_test = match guard {
+        Some(guard_expr) => Some(lower_expr(guard_expr)?),
+        None => None,
     };
-    json!({
-        "type": "IfStatement",
-        "test": guard_expr,
-        "consequent": lowered_body,
-        "alternative": Value::Null,
-    })
+    let condition = match (pattern_test, guard_test) {
+        (Some(pattern), Some(guard)) => Some(binary_expression("&&", pattern, guard)),
+        (Some(pattern), None) => Some(pattern),
+        (None, Some(guard)) => Some(guard),
+        (None, None) => None,
+    };
+    Some(condition)
+}
+
+fn lower_match_pattern_condition(discriminant: &Value, pat: &Pat) -> Option<Value> {
+    let tests = lower_match_arm_tests(pat);
+    if tests.iter().any(Option::is_none) {
+        return None;
+    }
+
+    let mut checks = tests
+        .into_iter()
+        .flatten()
+        .map(|test| binary_expression("==", discriminant.clone(), test))
+        .collect::<Vec<_>>();
+
+    let mut condition = checks.pop()?;
+    while let Some(next) = checks.pop() {
+        condition = binary_expression("||", next, condition);
+    }
+    Some(condition)
 }
 
 fn lower_match_arm_tests(pat: &Pat) -> Vec<Option<Value>> {
