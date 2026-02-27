@@ -382,6 +382,9 @@ fn lower_fn_arg(arg: &FnArg) -> Option<Value> {
     match arg {
         FnArg::Typed(pat_ty) => {
             let name = extract_binding_name(&pat_ty.pat)?;
+            if name == "_" {
+                return None;
+            }
             Some(variable_declaration(
                 identifier(name),
                 None,
