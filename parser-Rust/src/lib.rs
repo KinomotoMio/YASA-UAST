@@ -325,13 +325,9 @@ fn should_skip_dir(name: Option<&OsStr>) -> bool {
 fn manifest_rel_path(root_dir: &Path, manifest_path: &Path) -> String {
     let rel = manifest_path
         .strip_prefix(root_dir)
-        .unwrap_or(manifest_path);
+        .expect("discovered manifest should be inside root_dir");
     let rel_str = rel.to_string_lossy().replace('\\', "/");
-    if rel_str.starts_with('/') {
-        rel_str
-    } else {
-        format!("/{rel_str}")
-    }
+    format!("/{rel_str}")
 }
 
 fn parse_package_name_from_manifest(manifest_path: &Path) -> Result<Option<String>, RunError> {
