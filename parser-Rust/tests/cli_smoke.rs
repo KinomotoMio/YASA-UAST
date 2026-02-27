@@ -191,6 +191,74 @@ fn single_mode_lowers_regression_fixture_and_matches_golden() {
 }
 
 #[test]
+fn single_mode_lowers_mod_use_import_fixture_and_matches_golden() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_file = fixture_path("single/mod_use_import.rs");
+    let output_file = temp.path().join("out").join("mod_use_import.json");
+
+    let out = run_cli(&[
+        "-rootDir",
+        source_file.to_str().expect("fixture path"),
+        "-output",
+        output_file.to_str().expect("utf8 path"),
+        "-single",
+    ]);
+
+    assert!(
+        out.status.success(),
+        "cli failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let output_bytes = fs::read(&output_file).expect("read output");
+    let mut actual: Value = serde_json::from_slice(&output_bytes).expect("valid output json");
+    normalize_single_file_paths(&mut actual);
+
+    let expected_raw = fs::read_to_string(fixture_path("single/expected.mod_use_import.json"))
+        .expect("read expected mod/use/import golden");
+    let expected: Value = serde_json::from_str(&expected_raw).expect("valid expected json");
+
+    assert_eq!(
+        actual, expected,
+        "single file mod/use/import output mismatches golden"
+    );
+}
+
+#[test]
+fn single_mode_lowers_enum_trait_impl_fixture_and_matches_golden() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_file = fixture_path("single/enum_trait_impl.rs");
+    let output_file = temp.path().join("out").join("enum_trait_impl.json");
+
+    let out = run_cli(&[
+        "-rootDir",
+        source_file.to_str().expect("fixture path"),
+        "-output",
+        output_file.to_str().expect("utf8 path"),
+        "-single",
+    ]);
+
+    assert!(
+        out.status.success(),
+        "cli failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let output_bytes = fs::read(&output_file).expect("read output");
+    let mut actual: Value = serde_json::from_slice(&output_bytes).expect("valid output json");
+    normalize_single_file_paths(&mut actual);
+
+    let expected_raw = fs::read_to_string(fixture_path("single/expected.enum_trait_impl.json"))
+        .expect("read expected enum/trait/impl golden");
+    let expected: Value = serde_json::from_str(&expected_raw).expect("valid expected json");
+
+    assert_eq!(
+        actual, expected,
+        "single file enum/trait/impl output mismatches golden"
+    );
+}
+
+#[test]
 fn single_mode_rejects_output_equal_to_source_file() {
     let temp = tempfile::tempdir().expect("tempdir");
     let source_file = temp.path().join("same.rs");

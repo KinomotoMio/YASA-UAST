@@ -1,0 +1,150 @@
+{
+  "packageInfo": {
+    "pathName": "/",
+    "files": {
+      "__FILE__": {
+        "node": {
+          "type": "CompileUnit",
+          "body": [
+            {
+              "cloned": true,
+              "id": {
+                "name": "Debug",
+                "type": "Identifier"
+              },
+              "init": {
+                "from": {
+                  "literalType": "string",
+                  "type": "Literal",
+                  "value": "std::fmt::Debug"
+                },
+                "imported": null,
+                "local": null,
+                "type": "ImportExpression"
+              },
+              "type": "VariableDeclaration",
+              "varType": {
+                "id": null,
+                "type": "DynamicType",
+                "typeArguments": null
+              },
+              "variableParam": false
+            },
+            {
+              "expressions": [
+                {
+                  "cloned": true,
+                  "id": {
+                    "name": "io",
+                    "type": "Identifier"
+                  },
+                  "init": {
+                    "from": {
+                      "literalType": "string",
+                      "type": "Literal",
+                      "value": "std::io"
+                    },
+                    "imported": null,
+                    "local": null,
+                    "type": "ImportExpression"
+                  },
+                  "type": "VariableDeclaration",
+                  "varType": {
+                    "id": null,
+                    "type": "DynamicType",
+                    "typeArguments": null
+                  },
+                  "variableParam": false
+                },
+                {
+                  "cloned": true,
+                  "id": {
+                    "name": "IoRead",
+                    "type": "Identifier"
+                  },
+                  "init": {
+                    "from": {
+                      "literalType": "string",
+                      "type": "Literal",
+                      "value": "std::io::Read"
+                    },
+                    "imported": null,
+                    "local": null,
+                    "type": "ImportExpression"
+                  },
+                  "type": "VariableDeclaration",
+                  "varType": {
+                    "id": null,
+                    "type": "DynamicType",
+                    "typeArguments": null
+                  },
+                  "variableParam": false
+                }
+              ],
+              "type": "Sequence"
+            },
+            {
+              "body": [
+                {
+                  "body": {
+                    "body": [],
+                    "id": null,
+                    "type": "ScopedStatement"
+                  },
+                  "id": {
+                    "name": "helper",
+                    "type": "Identifier"
+                  },
+                  "modifiers": [
+                    "pub"
+                  ],
+                  "parameters": [],
+                  "returnType": {
+                    "id": null,
+                    "type": "VoidType",
+                    "typeArguments": null
+                  },
+                  "type": "FunctionDefinition"
+                }
+              ],
+              "id": {
+                "name": "inner",
+                "type": "Identifier"
+              },
+              "supers": [],
+              "type": "ClassDefinition"
+            },
+            {
+              "body": {
+                "body": [],
+                "id": null,
+                "type": "ScopedStatement"
+              },
+              "id": {
+                "name": "run",
+                "type": "Identifier"
+              },
+              "modifiers": [],
+              "parameters": [],
+              "returnType": {
+                "id": null,
+                "type": "VoidType",
+                "typeArguments": null
+              },
+              "type": "FunctionDefinition"
+            }
+          ],
+          "language": "rust",
+          "languageVersion": "",
+          "uri": "__FILE__",
+          "version": ""
+        },
+        "packageName": "__single__"
+      }
+    },
+    "subs": {}
+  },
+  "moduleName": "__single_module__",
+  "cargoTomlPath": "",
+  "numOfCargoToml": 0
+}
