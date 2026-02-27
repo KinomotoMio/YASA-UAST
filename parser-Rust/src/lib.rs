@@ -693,10 +693,6 @@ fn lower_match(expr_match: &ExprMatch) -> Option<Value> {
     for arm in &expr_match.arms {
         let body = lower_expr(arm.body.as_ref()).unwrap_or_else(empty_scoped_statement);
         let tests = lower_match_arm_tests(&arm.pat);
-        if tests.is_empty() {
-            cases.push(case_clause(None, body.clone()));
-            continue;
-        }
         for test in tests {
             cases.push(case_clause(test, body.clone()));
         }
