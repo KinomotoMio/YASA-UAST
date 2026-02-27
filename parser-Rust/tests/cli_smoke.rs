@@ -242,6 +242,104 @@ fn project_mode_skips_hidden_directories_when_discovering_manifests() {
     assert_eq!(json.get("numOfCargoToml").and_then(Value::as_u64), Some(1));
 }
 
+#[test]
+fn single_mode_preserves_wildcard_let_initializer_call() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_file = temp.path().join("wildcard.rs");
+    fs::write(
+        &source_file,
+        "fn sink(x: i32) {}\nfn f(input: i32) { let _ = sink(input); }\n",
+    )
+    .expect("write source");
+    let output_file = temp.path().join("out").join("wildcard.json");
+
+    let out = run_cli(&[
+        "-rootDir",
+        source_file.to_str().expect("utf8 path"),
+        "-output",
+        output_file.to_str().expect("utf8 path"),
+        "-single",
+    ]);
+    assert!(
+        out.status.success(),
+        "cli failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json_bytes = fs::read(&output_file).expect("read output");
+    let json: Value = serde_json::from_slice(&json_bytes).expect("valid json");
+    assert!(
+        count_nodes_of_type(&json, "CallExpression") >= 1,
+        "expected at least one CallExpression in lowered output"
+    );
+}
+
+#[test]
+fn single_mode_lowers_compound_assignment_operator() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_file = temp.path().join("assign_op.rs");
+    fs::write(&source_file, "fn f() { let mut v = 0; v += 1; }\n").expect("write source");
+    let output_file = temp.path().join("out").join("assign_op.json");
+
+    let out = run_cli(&[
+        "-rootDir",
+        source_file.to_str().expect("utf8 path"),
+        "-output",
+        output_file.to_str().expect("utf8 path"),
+        "-single",
+    ]);
+    assert!(
+        out.status.success(),
+        "cli failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json_bytes = fs::read(&output_file).expect("read output");
+    let json: Value = serde_json::from_slice(&json_bytes).expect("valid json");
+    assert!(
+        has_assignment_operator(&json, "+="),
+        "expected AssignmentExpression with operator '+='"
+    );
+}
+
+#[test]
+fn single_mode_lowers_unary_negation_in_initializer() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_file = temp.path().join("unary.rs");
+    fs::write(&source_file, "fn f() { let x = -1; }\n").expect("write source");
+    let output_file = temp.path().join("out").join("unary.json");
+
+    let out = run_cli(&[
+        "-rootDir",
+        source_file.to_str().expect("utf8 path"),
+        "-output",
+        output_file.to_str().expect("utf8 path"),
+        "-single",
+    ]);
+    assert!(
+        out.status.success(),
+        "cli failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json_bytes = fs::read(&output_file).expect("read output");
+    let json: Value = serde_json::from_slice(&json_bytes).expect("valid json");
+    assert!(
+        count_nodes_of_type(&json, "UnaryExpression") >= 1,
+        "expected UnaryExpression for negative initializer"
+    );
+    let serialized = serde_json::to_string(&json).expect("serialize output");
+    assert!(
+        !serialized.contains("__rhs__")
+            && !serialized.contains("__lhs__")
+            && !serialized.contains("__callee__")
+            && !serialized.contains("__receiver__")
+            && !serialized.contains("__object__")
+            && !serialized.contains("__param__"),
+        "placeholder identifiers should not appear in output"
+    );
+}
+
 fn fixture_path(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("testdata")
@@ -269,4 +367,49 @@ fn normalize_single_file_paths(json: &mut Value) {
     }
 
     files.insert("__FILE__".to_string(), file_entry);
+}
+
+fn count_nodes_of_type(value: &Value, target_type: &str) -> usize {
+    match value {
+        Value::Object(map) => {
+            let self_count = map
+                .get("type")
+                .and_then(Value::as_str)
+                .map(|node_type| usize::from(node_type == target_type))
+                .unwrap_or(0);
+            self_count
+                + map
+                    .values()
+                    .map(|child| count_nodes_of_type(child, target_type))
+                    .sum::<usize>()
+        }
+        Value::Array(items) => items
+            .iter()
+            .map(|child| count_nodes_of_type(child, target_type))
+            .sum(),
+        _ => 0,
+    }
+}
+
+fn has_assignment_operator(value: &Value, operator: &str) -> bool {
+    match value {
+        Value::Object(map) => {
+            let self_match = map
+                .get("type")
+                .and_then(Value::as_str)
+                .zip(map.get("operator").and_then(Value::as_str))
+                .map(|(node_type, node_operator)| {
+                    node_type == "AssignmentExpression" && node_operator == operator
+                })
+                .unwrap_or(false);
+            self_match
+                || map
+                    .values()
+                    .any(|child| has_assignment_operator(child, operator))
+        }
+        Value::Array(items) => items
+            .iter()
+            .any(|child| has_assignment_operator(child, operator)),
+        _ => false,
+    }
 }

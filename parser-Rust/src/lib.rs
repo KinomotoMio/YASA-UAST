@@ -10,8 +10,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use syn::{
     BinOp, Expr, ExprAssign, ExprBinary, ExprCall, ExprField, ExprLit, ExprMethodCall, ExprPath,
-    ExprReturn, Field, Fields, FnArg, Item, ItemFn, ItemStruct, Lit, Local, Pat, ReturnType, Stmt,
-    Type, Visibility,
+    ExprReference, ExprReturn, ExprTuple, ExprUnary, Field, Fields, FnArg, Item, ItemFn,
+    ItemStruct, Lit, Local, Pat, PatTuple, ReturnType, Stmt, Type, UnOp, Visibility,
 };
 
 const SINGLE_FILE_PACKAGE_NAME: &str = "__single__";
@@ -379,7 +379,9 @@ fn lower_unnamed_struct_field(index: usize, field: &Field) -> Value {
 fn lower_fn_arg(arg: &FnArg) -> Value {
     match arg {
         FnArg::Typed(pat_ty) => {
-            let name = extract_binding_name(&pat_ty.pat).unwrap_or_else(|| "__param__".to_string());
+            let Some(name) = extract_binding_name(&pat_ty.pat) else {
+                return Value::Null;
+            };
             variable_declaration(identifier(name), None, lower_type(&pat_ty.ty), false, false)
         }
         FnArg::Receiver(_) => Value::Null,
@@ -396,6 +398,13 @@ fn lower_stmt(stmt: &Stmt) -> Option<Value> {
 }
 
 fn lower_local(local: &Local) -> Option<Value> {
+    match &local.pat {
+        Pat::Tuple(tuple_pat) => lower_tuple_pattern_local(local, tuple_pat),
+        _ => lower_single_pattern_local(local),
+    }
+}
+
+fn lower_single_pattern_local(local: &Local) -> Option<Value> {
     let (name, explicit_type) = extract_binding_name_and_type(&local.pat)?;
     let init = local
         .init
@@ -412,14 +421,59 @@ fn lower_local(local: &Local) -> Option<Value> {
     ))
 }
 
+fn lower_tuple_pattern_local(local: &Local, tuple_pat: &PatTuple) -> Option<Value> {
+    let tuple_init_elements =
+        local
+            .init
+            .as_ref()
+            .and_then(|local_init| match local_init.expr.as_ref() {
+                Expr::Tuple(expr_tuple) => Some(&expr_tuple.elems),
+                _ => None,
+            });
+
+    let mut declarations = Vec::new();
+    for (idx, pat) in tuple_pat.elems.iter().enumerate() {
+        let Some((name, explicit_type)) = extract_binding_name_and_type(pat) else {
+            continue;
+        };
+        let init = tuple_init_elements
+            .as_ref()
+            .and_then(|elems| elems.iter().nth(idx))
+            .and_then(lower_expr);
+        let var_type = explicit_type.map(lower_type).unwrap_or_else(dynamic_type);
+        let cloned = init.is_some();
+        declarations.push(variable_declaration(
+            identifier(name),
+            init,
+            var_type,
+            cloned,
+            false,
+        ));
+    }
+
+    if declarations.is_empty() {
+        return local
+            .init
+            .as_ref()
+            .and_then(|local_init| lower_expr(&local_init.expr));
+    }
+    if declarations.len() == 1 {
+        return declarations.into_iter().next();
+    }
+    Some(sequence(declarations))
+}
+
 fn lower_expr(expr: &Expr) -> Option<Value> {
     match expr {
         Expr::Path(expr_path) => Some(lower_path(expr_path)),
-        Expr::Call(expr_call) => Some(lower_call(expr_call)),
-        Expr::MethodCall(expr_method_call) => Some(lower_method_call(expr_method_call)),
-        Expr::Field(expr_field) => Some(lower_field_access(expr_field)),
-        Expr::Assign(expr_assign) => Some(lower_assignment(expr_assign)),
+        Expr::Call(expr_call) => lower_call(expr_call),
+        Expr::MethodCall(expr_method_call) => lower_method_call(expr_method_call),
+        Expr::Field(expr_field) => lower_field_access(expr_field),
+        Expr::Assign(expr_assign) => lower_assignment(expr_assign),
         Expr::Binary(expr_binary) => lower_binary(expr_binary),
+        Expr::Unary(expr_unary) => lower_unary(expr_unary),
+        Expr::Reference(expr_reference) => lower_reference(expr_reference),
+        Expr::Tuple(expr_tuple) => Some(lower_tuple(expr_tuple)),
         Expr::Return(expr_return) => Some(lower_return(expr_return)),
         Expr::Lit(expr_lit) => Some(lower_literal(expr_lit)),
         Expr::Paren(expr_paren) => lower_expr(&expr_paren.expr),
@@ -430,9 +484,9 @@ fn lower_expr(expr: &Expr) -> Option<Value> {
 
 fn lower_path(expr_path: &ExprPath) -> Value {
     let mut segments = expr_path.path.segments.iter();
-    let Some(first) = segments.next() else {
-        return identifier("__path__");
-    };
+    let first = segments
+        .next()
+        .expect("path should have at least one segment");
 
     let mut value = identifier(first.ident.to_string());
     for segment in segments {
@@ -441,23 +495,22 @@ fn lower_path(expr_path: &ExprPath) -> Value {
     value
 }
 
-fn lower_call(expr_call: &ExprCall) -> Value {
-    let callee = lower_expr(&expr_call.func).unwrap_or_else(|| identifier("__callee__"));
+fn lower_call(expr_call: &ExprCall) -> Option<Value> {
+    let callee = lower_expr(&expr_call.func)?;
     let arguments = expr_call
         .args
         .iter()
         .map(|arg| lower_expr(arg).unwrap_or(Value::Null))
         .collect::<Vec<_>>();
-    json!({
+    Some(json!({
         "type": "CallExpression",
         "callee": callee,
         "arguments": arguments,
-    })
+    }))
 }
 
-fn lower_method_call(expr_method_call: &ExprMethodCall) -> Value {
-    let object =
-        lower_expr(&expr_method_call.receiver).unwrap_or_else(|| identifier("__receiver__"));
+fn lower_method_call(expr_method_call: &ExprMethodCall) -> Option<Value> {
+    let object = lower_expr(&expr_method_call.receiver)?;
     let callee = member_access(
         object,
         identifier(expr_method_call.method.to_string()),
@@ -468,65 +521,103 @@ fn lower_method_call(expr_method_call: &ExprMethodCall) -> Value {
         .iter()
         .map(|arg| lower_expr(arg).unwrap_or(Value::Null))
         .collect::<Vec<_>>();
-    json!({
+    Some(json!({
         "type": "CallExpression",
         "callee": callee,
         "arguments": arguments,
-    })
+    }))
 }
 
-fn lower_field_access(expr_field: &ExprField) -> Value {
-    let object = lower_expr(&expr_field.base).unwrap_or_else(|| identifier("__object__"));
-    match &expr_field.member {
+fn lower_field_access(expr_field: &ExprField) -> Option<Value> {
+    let object = lower_expr(&expr_field.base)?;
+    Some(match &expr_field.member {
         syn::Member::Named(ident) => member_access(object, identifier(ident.to_string()), false),
         syn::Member::Unnamed(index) => {
             member_access(object, literal_number(index.index as i64), true)
         }
-    }
+    })
 }
 
-fn lower_assignment(expr_assign: &ExprAssign) -> Value {
-    let left = lower_expr(&expr_assign.left).unwrap_or_else(|| identifier("__lhs__"));
-    let right = lower_expr(&expr_assign.right).unwrap_or_else(|| identifier("__rhs__"));
-    json!({
+fn lower_assignment(expr_assign: &ExprAssign) -> Option<Value> {
+    let left = lower_expr(&expr_assign.left)?;
+    let right = lower_expr(&expr_assign.right)?;
+    Some(json!({
         "type": "AssignmentExpression",
         "left": left,
         "right": right,
         "operator": "=",
         "cloned": true,
-    })
+    }))
 }
 
 fn lower_binary(expr_binary: &ExprBinary) -> Option<Value> {
-    let operator = match &expr_binary.op {
-        BinOp::Add(_) => "+",
-        BinOp::Sub(_) => "-",
-        BinOp::Mul(_) => "*",
-        BinOp::Div(_) => "/",
-        BinOp::Rem(_) => "%",
-        BinOp::And(_) => "&&",
-        BinOp::Or(_) => "||",
-        BinOp::BitXor(_) => "^",
-        BinOp::BitAnd(_) => "&",
-        BinOp::BitOr(_) => "|",
-        BinOp::Shl(_) => "<<",
-        BinOp::Shr(_) => ">>",
-        BinOp::Eq(_) => "==",
-        BinOp::Lt(_) => "<",
-        BinOp::Le(_) => "<=",
-        BinOp::Ne(_) => "!=",
-        BinOp::Ge(_) => ">=",
-        BinOp::Gt(_) => ">",
-        _ => return None,
-    };
-    let left = lower_expr(&expr_binary.left).unwrap_or_else(|| identifier("__left__"));
-    let right = lower_expr(&expr_binary.right).unwrap_or_else(|| identifier("__right__"));
+    let left = lower_expr(&expr_binary.left)?;
+    let right = lower_expr(&expr_binary.right)?;
+    match &expr_binary.op {
+        BinOp::Add(_) => Some(binary_expression("+", left, right)),
+        BinOp::Sub(_) => Some(binary_expression("-", left, right)),
+        BinOp::Mul(_) => Some(binary_expression("*", left, right)),
+        BinOp::Div(_) => Some(binary_expression("/", left, right)),
+        BinOp::Rem(_) => Some(binary_expression("%", left, right)),
+        BinOp::And(_) => Some(binary_expression("&&", left, right)),
+        BinOp::Or(_) => Some(binary_expression("||", left, right)),
+        BinOp::BitXor(_) => Some(binary_expression("^", left, right)),
+        BinOp::BitAnd(_) => Some(binary_expression("&", left, right)),
+        BinOp::BitOr(_) => Some(binary_expression("|", left, right)),
+        BinOp::Shl(_) => Some(binary_expression("<<", left, right)),
+        BinOp::Shr(_) => Some(binary_expression(">>", left, right)),
+        BinOp::Eq(_) => Some(binary_expression("==", left, right)),
+        BinOp::Lt(_) => Some(binary_expression("<", left, right)),
+        BinOp::Le(_) => Some(binary_expression("<=", left, right)),
+        BinOp::Ne(_) => Some(binary_expression("!=", left, right)),
+        BinOp::Ge(_) => Some(binary_expression(">=", left, right)),
+        BinOp::Gt(_) => Some(binary_expression(">", left, right)),
+        BinOp::AddAssign(_) => Some(assignment_expression("+=", left, right)),
+        BinOp::SubAssign(_) => Some(assignment_expression("-=", left, right)),
+        BinOp::MulAssign(_) => Some(assignment_expression("*=", left, right)),
+        BinOp::DivAssign(_) => Some(assignment_expression("/=", left, right)),
+        BinOp::RemAssign(_) => Some(assignment_expression("%=", left, right)),
+        BinOp::BitXorAssign(_) => Some(assignment_expression("^=", left, right)),
+        BinOp::BitAndAssign(_) => Some(assignment_expression("&=", left, right)),
+        BinOp::BitOrAssign(_) => Some(assignment_expression("|=", left, right)),
+        BinOp::ShlAssign(_) => Some(assignment_expression("<<=", left, right)),
+        BinOp::ShrAssign(_) => Some(assignment_expression(">>=", left, right)),
+        _ => None,
+    }
+}
+
+fn lower_unary(expr_unary: &ExprUnary) -> Option<Value> {
+    let argument = lower_expr(&expr_unary.expr)?;
+    match &expr_unary.op {
+        UnOp::Neg(_) => Some(unary_expression("-", argument)),
+        UnOp::Not(_) => Some(unary_expression("!", argument)),
+        UnOp::Deref(_) => Some(json!({
+            "type": "DereferenceExpression",
+            "argument": argument,
+        })),
+        _ => None,
+    }
+}
+
+fn lower_reference(expr_reference: &ExprReference) -> Option<Value> {
+    let argument = lower_expr(&expr_reference.expr)?;
     Some(json!({
-        "type": "BinaryExpression",
-        "operator": operator,
-        "left": left,
-        "right": right,
+        "type": "ReferenceExpression",
+        "argument": argument,
     }))
+}
+
+fn lower_tuple(expr_tuple: &ExprTuple) -> Value {
+    let elements = expr_tuple
+        .elems
+        .iter()
+        .filter_map(lower_expr)
+        .collect::<Vec<_>>();
+    json!({
+        "type": "TupleExpression",
+        "elements": elements,
+        "modifiable": false,
+    })
 }
 
 fn lower_return(expr_return: &ExprReturn) -> Value {
@@ -618,6 +709,7 @@ fn extract_binding_name_and_type<'a>(pat: &'a Pat) -> Option<(String, Option<&'a
             Some((name, Some(pat_type.ty.as_ref())))
         }
         Pat::Ident(pat_ident) => Some((pat_ident.ident.to_string(), None)),
+        Pat::Wild(_) => Some(("_".to_string(), None)),
         Pat::Reference(pat_ref) => extract_binding_name_and_type(&pat_ref.pat),
         _ => None,
     }
@@ -641,6 +733,41 @@ fn variable_declaration(
         "cloned": cloned,
         "varType": var_type,
         "variableParam": variable_param,
+    })
+}
+
+fn sequence(expressions: Vec<Value>) -> Value {
+    json!({
+        "type": "Sequence",
+        "expressions": expressions,
+    })
+}
+
+fn assignment_expression(operator: &str, left: Value, right: Value) -> Value {
+    json!({
+        "type": "AssignmentExpression",
+        "left": left,
+        "right": right,
+        "operator": operator,
+        "cloned": true,
+    })
+}
+
+fn binary_expression(operator: &str, left: Value, right: Value) -> Value {
+    json!({
+        "type": "BinaryExpression",
+        "operator": operator,
+        "left": left,
+        "right": right,
+    })
+}
+
+fn unary_expression(operator: &str, argument: Value) -> Value {
+    json!({
+        "type": "UnaryExpression",
+        "operator": operator,
+        "argument": argument,
+        "isSuffix": false,
     })
 }
 
