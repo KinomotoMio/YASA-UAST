@@ -80,9 +80,12 @@ fn project_mode_writes_required_top_level_fields() {
     let json: Value = serde_json::from_slice(&json_bytes).expect("valid json");
 
     assert!(json.get("packageInfo").is_some());
-    assert!(json.get("moduleName").is_some());
-    assert!(json.get("cargoTomlPath").is_some());
-    assert!(json.get("numOfCargoToml").is_some());
+    assert_eq!(json.get("moduleName").and_then(Value::as_str), Some("demo"));
+    assert_eq!(
+        json.get("cargoTomlPath").and_then(Value::as_str),
+        Some("/Cargo.toml")
+    );
+    assert_eq!(json.get("numOfCargoToml").and_then(Value::as_u64), Some(1));
 }
 
 #[test]
@@ -111,6 +114,51 @@ fn single_mode_rejects_output_equal_to_source_file() {
 
     let source_after = fs::read_to_string(&source_file).expect("read source file");
     assert_eq!(source_after, "fn main() {}\n");
+}
+
+#[test]
+fn project_mode_matches_golden_and_is_stable() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project_dir = fixture_path("project/multi");
+    let output_file_1 = temp.path().join("out").join("project1.json");
+    let output_file_2 = temp.path().join("out").join("project2.json");
+
+    let out1 = run_cli(&[
+        "-rootDir",
+        project_dir.to_str().expect("utf8 path"),
+        "-output",
+        output_file_1.to_str().expect("utf8 path"),
+    ]);
+    assert!(
+        out1.status.success(),
+        "first cli run failed: {}",
+        String::from_utf8_lossy(&out1.stderr)
+    );
+
+    let out2 = run_cli(&[
+        "-rootDir",
+        project_dir.to_str().expect("utf8 path"),
+        "-output",
+        output_file_2.to_str().expect("utf8 path"),
+    ]);
+    assert!(
+        out2.status.success(),
+        "second cli run failed: {}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
+
+    let bytes_1 = fs::read(&output_file_1).expect("read first output");
+    let bytes_2 = fs::read(&output_file_2).expect("read second output");
+    assert_eq!(bytes_1, bytes_2, "project output is not stable across runs");
+
+    let actual: Value = serde_json::from_slice(&bytes_1).expect("valid project output json");
+    let expected_raw = fs::read_to_string(fixture_path("project/multi/expected.project.json"))
+        .expect("read golden json");
+    let expected: Value = serde_json::from_str(&expected_raw).expect("valid golden json");
+    assert_eq!(
+        actual, expected,
+        "project discovery output mismatches golden"
+    );
 }
 
 fn fixture_path(relative: &str) -> PathBuf {
