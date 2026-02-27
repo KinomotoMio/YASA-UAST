@@ -85,6 +85,34 @@ fn project_mode_writes_required_top_level_fields() {
     assert!(json.get("numOfCargoToml").is_some());
 }
 
+#[test]
+fn single_mode_rejects_output_equal_to_source_file() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_file = temp.path().join("same.rs");
+    fs::write(&source_file, "fn main() {}\n").expect("write source file");
+
+    let out = run_cli(&[
+        "-rootDir",
+        source_file.to_str().expect("utf8 path"),
+        "-output",
+        source_file.to_str().expect("utf8 path"),
+        "-single",
+    ]);
+
+    assert!(
+        !out.status.success(),
+        "cli unexpectedly succeeded with same input/output path"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("refusing to overwrite source file"),
+        "unexpected error message: {stderr}"
+    );
+
+    let source_after = fs::read_to_string(&source_file).expect("read source file");
+    assert_eq!(source_after, "fn main() {}\n");
+}
+
 fn fixture_path(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("testdata")

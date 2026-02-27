@@ -35,12 +35,21 @@ impl fmt::Display for ParseArgsError {
 
 #[derive(Debug)]
 pub enum RunError {
-    InvalidInputPath { mode: &'static str, path: PathBuf },
+    InvalidInputPath {
+        mode: &'static str,
+        path: PathBuf,
+    },
+    OutputWouldOverwriteSource {
+        source: PathBuf,
+        output: PathBuf,
+    },
     Io {
         context: String,
         source: std::io::Error,
     },
-    Serialize { source: serde_json::Error },
+    Serialize {
+        source: serde_json::Error,
+    },
 }
 
 impl fmt::Display for RunError {
@@ -49,6 +58,12 @@ impl fmt::Display for RunError {
             Self::InvalidInputPath { mode, path } => {
                 write!(f, "{} mode expects a valid path: {}", mode, path.display())
             }
+            Self::OutputWouldOverwriteSource { source, output } => write!(
+                f,
+                "refusing to overwrite source file in single mode: source={} output={}",
+                source.display(),
+                output.display()
+            ),
             Self::Io { context, source } => write!(f, "{context}: {source}"),
             Self::Serialize { source } => write!(f, "failed to serialize output json: {source}"),
         }
@@ -59,6 +74,7 @@ impl std::error::Error for RunError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InvalidInputPath { .. } => None,
+            Self::OutputWouldOverwriteSource { .. } => None,
             Self::Io { source, .. } => Some(source),
             Self::Serialize { source } => Some(source),
         }
@@ -145,6 +161,18 @@ fn parse_single_file(file: &Path, output: &Path) -> Result<(), RunError> {
         context: format!("failed to read file {}", file.display()),
         source,
     })?;
+
+    let source_canonical = fs::canonicalize(file).map_err(|source| RunError::Io {
+        context: format!("failed to canonicalize source file {}", file.display()),
+        source,
+    })?;
+    let output_canonical = fs::canonicalize(output).unwrap_or_else(|_| output.to_path_buf());
+    if source_canonical == output_canonical {
+        return Err(RunError::OutputWouldOverwriteSource {
+            source: source_canonical,
+            output: output.to_path_buf(),
+        });
+    }
 
     let file_key = file.to_string_lossy().to_string();
     let mut files = BTreeMap::new();
