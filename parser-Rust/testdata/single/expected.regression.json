@@ -124,21 +124,33 @@
                   {
                     "alternative": {
                       "alternative": {
-                        "argument": {
-                          "name": "x",
-                          "type": "Identifier"
-                        },
-                        "isYield": false,
-                        "type": "ReturnStatement"
+                        "body": [
+                          {
+                            "argument": {
+                              "name": "x",
+                              "type": "Identifier"
+                            },
+                            "isYield": false,
+                            "type": "ReturnStatement"
+                          }
+                        ],
+                        "id": null,
+                        "type": "ScopedStatement"
                       },
                       "consequent": {
-                        "argument": {
-                          "literalType": "number",
-                          "type": "Literal",
-                          "value": 20
-                        },
-                        "isYield": false,
-                        "type": "ReturnStatement"
+                        "body": [
+                          {
+                            "argument": {
+                              "literalType": "number",
+                              "type": "Literal",
+                              "value": 20
+                            },
+                            "isYield": false,
+                            "type": "ReturnStatement"
+                          }
+                        ],
+                        "id": null,
+                        "type": "ScopedStatement"
                       },
                       "test": {
                         "left": {
@@ -156,13 +168,19 @@
                       "type": "IfStatement"
                     },
                     "consequent": {
-                      "argument": {
-                        "literalType": "number",
-                        "type": "Literal",
-                        "value": 10
-                      },
-                      "isYield": false,
-                      "type": "ReturnStatement"
+                      "body": [
+                        {
+                          "argument": {
+                            "literalType": "number",
+                            "type": "Literal",
+                            "value": 10
+                          },
+                          "isYield": false,
+                          "type": "ReturnStatement"
+                        }
+                      ],
+                      "id": null,
+                      "type": "ScopedStatement"
                     },
                     "test": {
                       "left": {
