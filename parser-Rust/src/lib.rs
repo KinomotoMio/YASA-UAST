@@ -301,7 +301,7 @@ fn lower_function(item_fn: &ItemFn) -> Value {
         .sig
         .inputs
         .iter()
-        .map(lower_fn_arg)
+        .filter_map(lower_fn_arg)
         .collect::<Vec<_>>();
     let return_type = lower_return_type(&item_fn.sig.output);
     let body = scoped_statement(item_fn.block.stmts.iter().filter_map(lower_stmt).collect());
