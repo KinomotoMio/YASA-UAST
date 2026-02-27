@@ -340,83 +340,17 @@ fn parse_package_name_from_manifest(manifest_path: &Path) -> Result<Option<Strin
         source,
     })?;
 
-    let mut in_package_section = false;
-    for raw_line in content.lines() {
-        let line_no_comment = strip_comment_outside_quotes(raw_line);
-        let line_no_comment = line_no_comment.trim();
-        if line_no_comment.is_empty() {
-            continue;
-        }
+    let value = match toml::from_str::<toml::Value>(&content) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
 
-        if line_no_comment.starts_with('[') && line_no_comment.ends_with(']') {
-            in_package_section = line_no_comment == "[package]";
-            continue;
-        }
-
-        if !in_package_section {
-            continue;
-        }
-
-        let Some((key, value)) = line_no_comment.split_once('=') else {
-            continue;
-        };
-        if key.trim() != "name" {
-            continue;
-        }
-        let parsed = parse_toml_string_value(value.trim());
-        if parsed.is_empty() {
-            return Ok(None);
-        }
-        return Ok(Some(parsed));
-    }
-
-    Ok(None)
-}
-
-fn strip_comment_outside_quotes(line: &str) -> String {
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut escaped = false;
-
-    for (idx, ch) in line.char_indices() {
-        if in_double {
-            if escaped {
-                escaped = false;
-                continue;
-            }
-            match ch {
-                '\\' => escaped = true,
-                '"' => in_double = false,
-                _ => {}
-            }
-            continue;
-        }
-        if in_single {
-            if ch == '\'' {
-                in_single = false;
-            }
-            continue;
-        }
-        match ch {
-            '"' => in_double = true,
-            '\'' => in_single = true,
-            '#' => return line[..idx].to_string(),
-            _ => {}
-        }
-    }
-    line.to_string()
-}
-
-fn parse_toml_string_value(raw: &str) -> String {
-    let trimmed = raw.trim();
-    if trimmed.len() >= 2 {
-        let first = trimmed.as_bytes()[0] as char;
-        let last = trimmed.as_bytes()[trimmed.len() - 1] as char;
-        if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-            return trimmed[1..trimmed.len() - 1].to_string();
-        }
-    }
-    trimmed.to_string()
+    let name = value
+        .get("package")
+        .and_then(|v| v.get("name"))
+        .and_then(toml::Value::as_str)
+        .map(str::to_string);
+    Ok(name.filter(|name| !name.trim().is_empty()))
 }
 
 fn build_package_info(manifests: &[CargoManifestInfo]) -> PackagePathInfo {
