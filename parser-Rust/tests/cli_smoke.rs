@@ -157,6 +157,40 @@ fn single_mode_lowers_control_flow_and_matches_golden() {
 }
 
 #[test]
+fn single_mode_lowers_regression_fixture_and_matches_golden() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_file = fixture_path("single/regression.rs");
+    let output_file = temp.path().join("out").join("regression.json");
+
+    let out = run_cli(&[
+        "-rootDir",
+        source_file.to_str().expect("fixture path"),
+        "-output",
+        output_file.to_str().expect("utf8 path"),
+        "-single",
+    ]);
+
+    assert!(
+        out.status.success(),
+        "cli failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let output_bytes = fs::read(&output_file).expect("read output");
+    let mut actual: Value = serde_json::from_slice(&output_bytes).expect("valid output json");
+    normalize_single_file_paths(&mut actual);
+
+    let expected_raw = fs::read_to_string(fixture_path("single/expected.regression.json"))
+        .expect("read expected regression golden");
+    let expected: Value = serde_json::from_str(&expected_raw).expect("valid expected json");
+
+    assert_eq!(
+        actual, expected,
+        "single file regression output mismatches golden"
+    );
+}
+
+#[test]
 fn single_mode_rejects_output_equal_to_source_file() {
     let temp = tempfile::tempdir().expect("tempdir");
     let source_file = temp.path().join("same.rs");
@@ -226,6 +260,37 @@ fn project_mode_matches_golden_and_is_stable() {
     assert_eq!(
         actual, expected,
         "project discovery output mismatches golden"
+    );
+}
+
+#[test]
+fn project_mode_hidden_hash_fixture_matches_golden() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project_dir = fixture_path("project/hidden_hash");
+    let output_file = temp.path().join("out").join("hidden-hash.json");
+
+    let out = run_cli(&[
+        "-rootDir",
+        project_dir.to_str().expect("utf8 path"),
+        "-output",
+        output_file.to_str().expect("utf8 path"),
+    ]);
+    assert!(
+        out.status.success(),
+        "cli failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let output_bytes = fs::read(&output_file).expect("read output");
+    let actual: Value = serde_json::from_slice(&output_bytes).expect("valid output json");
+    let expected_raw =
+        fs::read_to_string(fixture_path("project/hidden_hash/expected.project.json"))
+            .expect("read hidden-hash project golden");
+    let expected: Value = serde_json::from_str(&expected_raw).expect("valid expected json");
+
+    assert_eq!(
+        actual, expected,
+        "project hidden/hash fixture output mismatches golden"
     );
 }
 
