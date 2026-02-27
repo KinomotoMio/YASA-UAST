@@ -639,6 +639,39 @@ fn single_mode_ignores_wildcard_in_for_tuple_binding() {
     );
 }
 
+#[test]
+fn single_mode_ignores_wildcard_in_let_tuple_pattern() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_file = temp.path().join("let_tuple_wild.rs");
+    fs::write(
+        &source_file,
+        "fn f(pair: (i32, i32)) { let (x, _) = pair; let y = x; }\n",
+    )
+    .expect("write source");
+    let output_file = temp.path().join("out").join("let_tuple_wild.json");
+
+    let out = run_cli(&[
+        "-rootDir",
+        source_file.to_str().expect("utf8 path"),
+        "-output",
+        output_file.to_str().expect("utf8 path"),
+        "-single",
+    ]);
+    assert!(
+        out.status.success(),
+        "cli failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json_bytes = fs::read(&output_file).expect("read output");
+    let json: Value = serde_json::from_slice(&json_bytes).expect("valid json");
+    let serialized = serde_json::to_string(&json).expect("serialize output");
+    assert!(
+        !serialized.contains("\"name\":\"_\""),
+        "wildcard tuple binding should not produce identifier '_' in UAST"
+    );
+}
+
 fn fixture_path(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("testdata")

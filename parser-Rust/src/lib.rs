@@ -442,6 +442,9 @@ fn lower_tuple_pattern_local(local: &Local, tuple_pat: &PatTuple) -> Option<Valu
         let Some((name, explicit_type)) = extract_binding_name_and_type(pat) else {
             continue;
         };
+        if name == "_" {
+            continue;
+        }
         let init = tuple_init_elements
             .as_ref()
             .and_then(|elems| elems.iter().nth(idx))
