@@ -254,6 +254,14 @@ fn project_mode_matches_golden_and_is_stable() {
     assert_eq!(bytes_1, bytes_2, "project output is not stable across runs");
 
     let actual: Value = serde_json::from_slice(&bytes_1).expect("valid project output json");
+    assert!(
+        package_tree_has_rust_source_file(&actual),
+        "project output should include at least one .rs file node"
+    );
+    assert!(
+        package_tree_has_non_empty_rust_body(&actual),
+        "project output should include at least one non-empty lowered .rs compile unit"
+    );
     let expected_raw = fs::read_to_string(fixture_path("project/multi/expected.project.json"))
         .expect("read golden json");
     let expected: Value = serde_json::from_str(&expected_raw).expect("valid golden json");
@@ -809,6 +817,56 @@ fn has_assignment_operator(value: &Value, operator: &str) -> bool {
             .any(|child| has_assignment_operator(child, operator)),
         _ => false,
     }
+}
+
+fn package_tree_has_rust_source_file(value: &Value) -> bool {
+    let Some(package_info) = value.get("packageInfo") else {
+        return false;
+    };
+    package_tree_any_file_match(package_info, |path, _| path.ends_with(".rs"))
+}
+
+fn package_tree_has_non_empty_rust_body(value: &Value) -> bool {
+    let Some(package_info) = value.get("packageInfo") else {
+        return false;
+    };
+    package_tree_any_file_match(package_info, |path, node_info| {
+        if !path.ends_with(".rs") {
+            return false;
+        }
+        node_info
+            .get("node")
+            .and_then(|v| v.get("body"))
+            .and_then(Value::as_array)
+            .is_some_and(|body| !body.is_empty())
+    })
+}
+
+fn package_tree_any_file_match<F>(tree: &Value, matcher: F) -> bool
+where
+    F: Copy + Fn(&str, &Value) -> bool,
+{
+    let Some(tree_obj) = tree.as_object() else {
+        return false;
+    };
+
+    if let Some(files) = tree_obj.get("files").and_then(Value::as_object) {
+        for (path, node_info) in files {
+            if matcher(path, node_info) {
+                return true;
+            }
+        }
+    }
+
+    if let Some(subs) = tree_obj.get("subs").and_then(Value::as_object) {
+        for subtree in subs.values() {
+            if package_tree_any_file_match(subtree, matcher) {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 fn find_variable_declaration_by_name<'a>(value: &'a Value, name: &str) -> Option<&'a Value> {
