@@ -9,9 +9,11 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use syn::{
-    BinOp, Expr, ExprAssign, ExprBinary, ExprCall, ExprField, ExprLit, ExprMethodCall, ExprPath,
-    ExprReference, ExprReturn, ExprTuple, ExprUnary, Field, Fields, FnArg, Item, ItemFn,
-    ItemStruct, Lit, Local, Pat, PatTuple, ReturnType, Stmt, Type, UnOp, Visibility,
+    Arm, BinOp, Block, Expr, ExprAssign, ExprBinary, ExprBlock, ExprBreak, ExprCall, ExprContinue,
+    ExprField, ExprForLoop, ExprIf, ExprLit, ExprLoop, ExprMatch, ExprMethodCall, ExprPath,
+    ExprRange, ExprReference, ExprReturn, ExprTuple, ExprUnary, ExprWhile, Field, Fields, FnArg,
+    Item, ItemFn, ItemStruct, Lit, Local, Pat, PatTuple, RangeLimits, ReturnType, Stmt, Type, UnOp,
+    Visibility,
 };
 
 const SINGLE_FILE_PACKAGE_NAME: &str = "__single__";
@@ -304,7 +306,7 @@ fn lower_function(item_fn: &ItemFn) -> Value {
         .filter_map(lower_fn_arg)
         .collect::<Vec<_>>();
     let return_type = lower_return_type(&item_fn.sig.output);
-    let body = scoped_statement(item_fn.block.stmts.iter().filter_map(lower_stmt).collect());
+    let body = lower_block(&item_fn.block);
 
     json!({
         "type": "FunctionDefinition",
@@ -478,6 +480,15 @@ fn lower_expr(expr: &Expr) -> Option<Value> {
         Expr::Unary(expr_unary) => lower_unary(expr_unary),
         Expr::Reference(expr_reference) => lower_reference(expr_reference),
         Expr::Tuple(expr_tuple) => Some(lower_tuple(expr_tuple)),
+        Expr::Range(expr_range) => lower_range_expr(expr_range),
+        Expr::If(expr_if) => lower_if(expr_if),
+        Expr::Match(expr_match) => lower_match(expr_match),
+        Expr::ForLoop(expr_for_loop) => lower_for_loop(expr_for_loop),
+        Expr::While(expr_while) => lower_while(expr_while),
+        Expr::Loop(expr_loop) => lower_loop(expr_loop),
+        Expr::Break(expr_break) => Some(lower_break(expr_break)),
+        Expr::Continue(expr_continue) => Some(lower_continue(expr_continue)),
+        Expr::Block(expr_block) => Some(lower_block(&expr_block.block)),
         Expr::Return(expr_return) => Some(lower_return(expr_return)),
         Expr::Lit(expr_lit) => Some(lower_literal(expr_lit)),
         Expr::Paren(expr_paren) => lower_expr(&expr_paren.expr),
@@ -487,7 +498,11 @@ fn lower_expr(expr: &Expr) -> Option<Value> {
 }
 
 fn lower_path(expr_path: &ExprPath) -> Value {
-    let mut segments = expr_path.path.segments.iter();
+    lower_syn_path(&expr_path.path)
+}
+
+fn lower_syn_path(path: &syn::Path) -> Value {
+    let mut segments = path.segments.iter();
     let first = segments
         .next()
         .expect("path should have at least one segment");
@@ -624,6 +639,256 @@ fn lower_tuple(expr_tuple: &ExprTuple) -> Value {
     })
 }
 
+fn lower_range_expr(expr_range: &ExprRange) -> Option<Value> {
+    let start = expr_range
+        .start
+        .as_ref()
+        .and_then(|expr| lower_expr(expr))
+        .unwrap_or_else(noop);
+    let end = expr_range
+        .end
+        .as_ref()
+        .and_then(|expr| lower_expr(expr))
+        .unwrap_or_else(noop);
+    let inclusive = matches!(expr_range.limits, RangeLimits::Closed(_));
+
+    Some(json!({
+        "type": "TupleExpression",
+        "elements": [start, end, literal_boolean(inclusive)],
+        "modifiable": false,
+    }))
+}
+
+fn lower_if(expr_if: &ExprIf) -> Option<Value> {
+    let test = lower_expr(&expr_if.cond)?;
+    let consequent = lower_block(&expr_if.then_branch);
+    let alternative = expr_if
+        .else_branch
+        .as_ref()
+        .and_then(|(_, else_expr)| lower_if_alternative(else_expr))
+        .unwrap_or(Value::Null);
+    Some(json!({
+        "type": "IfStatement",
+        "test": test,
+        "consequent": consequent,
+        "alternative": alternative,
+    }))
+}
+
+fn lower_if_alternative(else_expr: &Expr) -> Option<Value> {
+    match else_expr {
+        Expr::If(expr_if) => lower_if(expr_if),
+        Expr::Block(ExprBlock { block, .. }) => Some(lower_block(block)),
+        _ => lower_expr(else_expr),
+    }
+}
+
+fn lower_match(expr_match: &ExprMatch) -> Option<Value> {
+    let discriminant = lower_expr(&expr_match.expr)?;
+    if expr_match.arms.iter().any(|arm| arm.guard.is_some()) {
+        return lower_match_with_guards(&discriminant, &expr_match.arms);
+    }
+
+    let mut cases = Vec::new();
+    for arm in &expr_match.arms {
+        let body = lower_expr(arm.body.as_ref()).unwrap_or_else(empty_scoped_statement);
+        let tests = lower_match_arm_tests(&arm.pat);
+        for test in tests {
+            cases.push(case_clause(test, body.clone()));
+        }
+    }
+    Some(json!({
+        "type": "SwitchStatement",
+        "discriminant": discriminant,
+        "cases": cases,
+    }))
+}
+
+fn lower_match_with_guards(discriminant: &Value, arms: &[Arm]) -> Option<Value> {
+    let mut alternative = Value::Null;
+    for arm in arms.iter().rev() {
+        let consequent = lower_expr(arm.body.as_ref())
+            .map(ensure_scoped_statement)
+            .unwrap_or_else(empty_scoped_statement);
+        let condition = lower_match_arm_condition(
+            discriminant,
+            &arm.pat,
+            arm.guard.as_ref().map(|(_, guard)| guard.as_ref()),
+        )?;
+        alternative = match condition {
+            Some(test) => json!({
+                "type": "IfStatement",
+                "test": test,
+                "consequent": consequent,
+                "alternative": alternative,
+            }),
+            None => consequent,
+        };
+    }
+    if alternative.is_null() {
+        return Some(empty_scoped_statement());
+    }
+    Some(alternative)
+}
+
+fn lower_match_arm_condition(
+    discriminant: &Value,
+    pat: &Pat,
+    guard: Option<&Expr>,
+) -> Option<Option<Value>> {
+    let pattern_test = lower_match_pattern_condition(discriminant, pat);
+    let guard_test = match guard {
+        Some(guard_expr) => Some(lower_expr(guard_expr)?),
+        None => None,
+    };
+    let condition = match (pattern_test, guard_test) {
+        (Some(pattern), Some(guard)) => Some(binary_expression("&&", pattern, guard)),
+        (Some(pattern), None) => Some(pattern),
+        (None, Some(guard)) => Some(guard),
+        (None, None) => None,
+    };
+    Some(condition)
+}
+
+fn lower_match_pattern_condition(discriminant: &Value, pat: &Pat) -> Option<Value> {
+    let tests = lower_match_arm_tests(pat);
+    if tests.iter().any(Option::is_none) {
+        return None;
+    }
+
+    let mut checks = tests
+        .into_iter()
+        .flatten()
+        .map(|test| binary_expression("==", discriminant.clone(), test))
+        .collect::<Vec<_>>();
+
+    let mut condition = checks.pop()?;
+    while let Some(next) = checks.pop() {
+        condition = binary_expression("||", next, condition);
+    }
+    Some(condition)
+}
+
+fn lower_match_arm_tests(pat: &Pat) -> Vec<Option<Value>> {
+    match pat {
+        Pat::Or(pat_or) => pat_or
+            .cases
+            .iter()
+            .map(lower_match_pattern_test)
+            .collect::<Vec<_>>(),
+        _ => vec![lower_match_pattern_test(pat)],
+    }
+}
+
+fn lower_match_pattern_test(pat: &Pat) -> Option<Value> {
+    match pat {
+        Pat::Lit(pat_lit) => Some(lower_lit(&pat_lit.lit)),
+        Pat::Path(pat_path) => Some(lower_syn_path(&pat_path.path)),
+        Pat::TupleStruct(pat_tuple_struct) => Some(lower_syn_path(&pat_tuple_struct.path)),
+        Pat::Struct(pat_struct) => Some(lower_syn_path(&pat_struct.path)),
+        Pat::Ident(pat_ident) => pat_ident
+            .subpat
+            .as_ref()
+            .and_then(|(_, subpat)| lower_match_pattern_test(subpat)),
+        Pat::Reference(pat_reference) => lower_match_pattern_test(&pat_reference.pat),
+        Pat::Wild(_) => None,
+        _ => None,
+    }
+}
+
+fn lower_for_loop(expr_for_loop: &ExprForLoop) -> Option<Value> {
+    let right = lower_expr(&expr_for_loop.expr)?;
+    let (key, value) = lower_range_binding(&expr_for_loop.pat);
+    Some(json!({
+        "type": "RangeStatement",
+        "key": key.unwrap_or(Value::Null),
+        "value": value.unwrap_or(Value::Null),
+        "right": right,
+        "body": lower_block(&expr_for_loop.body),
+    }))
+}
+
+fn lower_range_binding(pat: &Pat) -> (Option<Value>, Option<Value>) {
+    match pat {
+        Pat::Ident(pat_ident) => (None, Some(identifier(pat_ident.ident.to_string()))),
+        Pat::Tuple(tuple) => {
+            let mut names = tuple
+                .elems
+                .iter()
+                .filter_map(extract_range_binding_name)
+                .map(identifier)
+                .collect::<Vec<_>>();
+            match names.len() {
+                0 => (None, None),
+                1 => (None, names.pop()),
+                _ => (Some(names.remove(0)), Some(names.remove(0))),
+            }
+        }
+        Pat::Reference(pat_reference) => lower_range_binding(&pat_reference.pat),
+        _ => {
+            let value = extract_range_binding_name(pat).map(identifier);
+            (None, value)
+        }
+    }
+}
+
+fn extract_range_binding_name(pat: &Pat) -> Option<String> {
+    match pat {
+        Pat::Wild(_) => None,
+        Pat::Ident(pat_ident) => Some(pat_ident.ident.to_string()),
+        Pat::Reference(pat_reference) => extract_range_binding_name(&pat_reference.pat),
+        Pat::Type(pat_type) => extract_range_binding_name(&pat_type.pat),
+        _ => extract_binding_name(pat).and_then(|name| if name == "_" { None } else { Some(name) }),
+    }
+}
+
+fn lower_while(expr_while: &ExprWhile) -> Option<Value> {
+    let test = lower_expr(&expr_while.cond)?;
+    Some(json!({
+        "type": "WhileStatement",
+        "test": test,
+        "body": lower_block(&expr_while.body),
+        "isPostTest": Value::Null,
+    }))
+}
+
+fn lower_loop(expr_loop: &ExprLoop) -> Option<Value> {
+    Some(json!({
+        "type": "WhileStatement",
+        "test": literal_boolean(true),
+        "body": lower_block(&expr_loop.body),
+        "isPostTest": Value::Null,
+    }))
+}
+
+fn lower_break(expr_break: &ExprBreak) -> Value {
+    let label = expr_break
+        .label
+        .as_ref()
+        .map(|lifetime| identifier(lifetime.ident.to_string()))
+        .unwrap_or(Value::Null);
+    json!({
+        "type": "BreakStatement",
+        "label": label,
+    })
+}
+
+fn lower_continue(expr_continue: &ExprContinue) -> Value {
+    let label = expr_continue
+        .label
+        .as_ref()
+        .map(|lifetime| identifier(lifetime.ident.to_string()))
+        .unwrap_or(Value::Null);
+    json!({
+        "type": "ContinueStatement",
+        "label": label,
+    })
+}
+
+fn lower_block(block: &Block) -> Value {
+    scoped_statement(block.stmts.iter().filter_map(lower_stmt).collect())
+}
+
 fn lower_return(expr_return: &ExprReturn) -> Value {
     let argument = expr_return
         .expr
@@ -638,7 +903,11 @@ fn lower_return(expr_return: &ExprReturn) -> Value {
 }
 
 fn lower_literal(expr_lit: &ExprLit) -> Value {
-    match &expr_lit.lit {
+    lower_lit(&expr_lit.lit)
+}
+
+fn lower_lit(lit: &Lit) -> Value {
+    match lit {
         Lit::Int(value) => match value.base10_parse::<i64>() {
             Ok(number) => literal_number(number),
             Err(_) => json!({
@@ -790,11 +1059,25 @@ fn literal_number(value: i64) -> Value {
     })
 }
 
+fn literal_boolean(value: bool) -> Value {
+    json!({
+        "type": "Literal",
+        "value": value,
+        "literalType": "boolean",
+    })
+}
+
 fn null_literal() -> Value {
     json!({
         "type": "Literal",
         "value": Value::Null,
         "literalType": "null",
+    })
+}
+
+fn noop() -> Value {
+    json!({
+        "type": "Noop",
     })
 }
 
@@ -812,6 +1095,25 @@ fn scoped_statement(body: Vec<Value>) -> Value {
         "type": "ScopedStatement",
         "body": body,
         "id": Value::Null,
+    })
+}
+
+fn ensure_scoped_statement(instruction: Value) -> Value {
+    match instruction.get("type").and_then(Value::as_str) {
+        Some("ScopedStatement") => instruction,
+        _ => scoped_statement(vec![instruction]),
+    }
+}
+
+fn empty_scoped_statement() -> Value {
+    scoped_statement(Vec::new())
+}
+
+fn case_clause(test: Option<Value>, body: Value) -> Value {
+    json!({
+        "type": "CaseClause",
+        "test": test.unwrap_or(Value::Null),
+        "body": body,
     })
 }
 
