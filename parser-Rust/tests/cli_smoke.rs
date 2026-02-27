@@ -675,6 +675,30 @@ fn single_mode_ignores_wildcard_in_let_tuple_pattern() {
         !serialized.contains("\"name\":\"_\""),
         "wildcard tuple binding should not produce identifier '_' in UAST"
     );
+    let x_decl = find_variable_declaration_by_name(&json, "x")
+        .expect("expected declaration for tuple-bound variable x");
+    let x_init = x_decl
+        .get("init")
+        .and_then(Value::as_object)
+        .expect("x init should be present");
+    assert_eq!(x_init.get("type").and_then(Value::as_str), Some("MemberAccess"));
+    assert_eq!(x_init.get("computed").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        x_init
+            .get("object")
+            .and_then(Value::as_object)
+            .and_then(|v| v.get("name"))
+            .and_then(Value::as_str),
+        Some("pair")
+    );
+    assert_eq!(
+        x_init
+            .get("property")
+            .and_then(Value::as_object)
+            .and_then(|v| v.get("value"))
+            .and_then(Value::as_i64),
+        Some(0)
+    );
 }
 
 fn fixture_path(relative: &str) -> PathBuf {
@@ -748,6 +772,32 @@ fn has_assignment_operator(value: &Value, operator: &str) -> bool {
             .iter()
             .any(|child| has_assignment_operator(child, operator)),
         _ => false,
+    }
+}
+
+fn find_variable_declaration_by_name<'a>(value: &'a Value, name: &str) -> Option<&'a Value> {
+    match value {
+        Value::Object(map) => {
+            let is_match = map
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|node_type| node_type == "VariableDeclaration")
+                && map
+                    .get("id")
+                    .and_then(Value::as_object)
+                    .and_then(|id| id.get("name"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|id_name| id_name == name);
+            if is_match {
+                return Some(value);
+            }
+            map.values()
+                .find_map(|child| find_variable_declaration_by_name(child, name))
+        }
+        Value::Array(items) => items
+            .iter()
+            .find_map(|child| find_variable_declaration_by_name(child, name)),
+        _ => None,
     }
 }
 

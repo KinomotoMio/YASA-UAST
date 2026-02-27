@@ -431,14 +431,17 @@ fn lower_single_pattern_local(local: &Local) -> Option<Value> {
 }
 
 fn lower_tuple_pattern_local(local: &Local, tuple_pat: &PatTuple) -> Option<Value> {
-    let tuple_init_elements =
-        local
-            .init
-            .as_ref()
-            .and_then(|local_init| match local_init.expr.as_ref() {
-                Expr::Tuple(expr_tuple) => Some(&expr_tuple.elems),
-                _ => None,
-            });
+    let tuple_init_elements = local
+        .init
+        .as_ref()
+        .and_then(|local_init| match local_init.expr.as_ref() {
+            Expr::Tuple(expr_tuple) => Some(&expr_tuple.elems),
+            _ => None,
+        });
+    let tuple_init_expr = local
+        .init
+        .as_ref()
+        .and_then(|local_init| lower_expr(&local_init.expr));
 
     let mut declarations = Vec::new();
     for (idx, pat) in tuple_pat.elems.iter().enumerate() {
@@ -451,7 +454,12 @@ fn lower_tuple_pattern_local(local: &Local, tuple_pat: &PatTuple) -> Option<Valu
         let init = tuple_init_elements
             .as_ref()
             .and_then(|elems| elems.iter().nth(idx))
-            .and_then(lower_expr);
+            .and_then(lower_expr)
+            .or_else(|| {
+                tuple_init_expr.as_ref().map(|expr| {
+                    member_access(expr.clone(), literal_number(idx as i64), true)
+                })
+            });
         let var_type = explicit_type.map(lower_type).unwrap_or_else(dynamic_type);
         let cloned = init.is_some();
         declarations.push(variable_declaration(
