@@ -89,6 +89,40 @@ fn project_mode_writes_required_top_level_fields() {
 }
 
 #[test]
+fn single_mode_lowers_core_syntax_and_matches_golden() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_file = fixture_path("single/core_syntax.rs");
+    let output_file = temp.path().join("out").join("core.json");
+
+    let out = run_cli(&[
+        "-rootDir",
+        source_file.to_str().expect("fixture path"),
+        "-output",
+        output_file.to_str().expect("utf8 path"),
+        "-single",
+    ]);
+
+    assert!(
+        out.status.success(),
+        "cli failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let output_bytes = fs::read(&output_file).expect("read output");
+    let mut actual: Value = serde_json::from_slice(&output_bytes).expect("valid output json");
+    normalize_single_file_paths(&mut actual);
+
+    let expected_raw = fs::read_to_string(fixture_path("single/expected.core.json"))
+        .expect("read expected core golden");
+    let expected: Value = serde_json::from_str(&expected_raw).expect("valid expected json");
+
+    assert_eq!(
+        actual, expected,
+        "single file core syntax output mismatches golden"
+    );
+}
+
+#[test]
 fn single_mode_rejects_output_equal_to_source_file() {
     let temp = tempfile::tempdir().expect("tempdir");
     let source_file = temp.path().join("same.rs");
@@ -212,4 +246,27 @@ fn fixture_path(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("testdata")
         .join(relative)
+}
+
+fn normalize_single_file_paths(json: &mut Value) {
+    let files = json
+        .get_mut("packageInfo")
+        .and_then(|v| v.get_mut("files"))
+        .and_then(Value::as_object_mut)
+        .expect("packageInfo.files object");
+    assert_eq!(files.len(), 1, "single-mode output should contain one file");
+
+    let original_key = files.keys().next().cloned().expect("single file key");
+    let mut file_entry = files
+        .remove(&original_key)
+        .expect("single file entry should exist");
+
+    if let Some(uri) = file_entry
+        .get_mut("node")
+        .and_then(|node| node.get_mut("uri"))
+    {
+        *uri = Value::String("__FILE__".to_string());
+    }
+
+    files.insert("__FILE__".to_string(), file_entry);
 }
