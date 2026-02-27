@@ -98,15 +98,11 @@ where
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "-rootDir" | "--rootDir" => {
-                let value = iter.next().ok_or_else(|| {
-                    ParseArgsError::Message(format!("Missing value for '{}'", arg))
-                })?;
+                let value = next_arg_value(&mut iter, &arg)?;
                 root_dir = Some(PathBuf::from(value));
             }
             "-output" | "--output" => {
-                let value = iter.next().ok_or_else(|| {
-                    ParseArgsError::Message(format!("Missing value for '{}'", arg))
-                })?;
+                let value = next_arg_value(&mut iter, &arg)?;
                 output = Some(PathBuf::from(value));
             }
             "-single" | "--single" => {
@@ -135,6 +131,36 @@ where
         output,
         single,
     })
+}
+
+fn next_arg_value<I>(iter: &mut I, flag: &str) -> Result<String, ParseArgsError>
+where
+    I: Iterator<Item = String>,
+{
+    let value = iter
+        .next()
+        .ok_or_else(|| ParseArgsError::Message(format!("Missing value for '{}'", flag)))?;
+    if is_known_flag(&value) {
+        return Err(ParseArgsError::Message(format!(
+            "Missing value for '{}'",
+            flag
+        )));
+    }
+    Ok(value)
+}
+
+fn is_known_flag(value: &str) -> bool {
+    matches!(
+        value,
+        "-rootDir"
+            | "--rootDir"
+            | "-output"
+            | "--output"
+            | "-single"
+            | "--single"
+            | "-h"
+            | "--help"
+    )
 }
 
 pub fn parse_args() -> Result<CliArgs, ParseArgsError> {
@@ -258,5 +284,13 @@ mod tests {
         let err = parse_args_from(args).expect_err("missing output should fail");
         assert!(matches!(err, ParseArgsError::Message(_)));
         assert!(err.to_string().contains("-output"));
+    }
+
+    #[test]
+    fn parse_args_rejects_flag_as_value() {
+        let args = vec!["-rootDir", "-output", "-output", "/tmp/out.json"];
+        let err = parse_args_from(args).expect_err("flag used as value should fail");
+        assert!(matches!(err, ParseArgsError::Message(_)));
+        assert!(err.to_string().contains("Missing value for '-rootDir'"));
     }
 }
