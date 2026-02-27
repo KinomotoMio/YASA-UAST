@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 use syn::{
     BinOp, Block, Expr, ExprAssign, ExprBinary, ExprBlock, ExprBreak, ExprCall, ExprContinue,
     ExprField, ExprForLoop, ExprIf, ExprLit, ExprLoop, ExprMatch, ExprMethodCall, ExprPath,
-    ExprReference, ExprReturn, ExprTuple, ExprUnary, ExprWhile, Field, Fields, FnArg, Item, ItemFn,
-    ItemStruct, Lit, Local, Pat, PatTuple, ReturnType, Stmt, Type, UnOp, Visibility,
+    ExprRange, ExprReference, ExprReturn, ExprTuple, ExprUnary, ExprWhile, Field, Fields, FnArg,
+    Item, ItemFn, ItemStruct, Lit, Local, Pat, PatTuple, RangeLimits, ReturnType, Stmt, Type, UnOp,
+    Visibility,
 };
 
 const SINGLE_FILE_PACKAGE_NAME: &str = "__single__";
@@ -479,6 +480,7 @@ fn lower_expr(expr: &Expr) -> Option<Value> {
         Expr::Unary(expr_unary) => lower_unary(expr_unary),
         Expr::Reference(expr_reference) => lower_reference(expr_reference),
         Expr::Tuple(expr_tuple) => Some(lower_tuple(expr_tuple)),
+        Expr::Range(expr_range) => lower_range_expr(expr_range),
         Expr::If(expr_if) => lower_if(expr_if),
         Expr::Match(expr_match) => lower_match(expr_match),
         Expr::ForLoop(expr_for_loop) => lower_for_loop(expr_for_loop),
@@ -637,6 +639,26 @@ fn lower_tuple(expr_tuple: &ExprTuple) -> Value {
     })
 }
 
+fn lower_range_expr(expr_range: &ExprRange) -> Option<Value> {
+    let start = expr_range
+        .start
+        .as_ref()
+        .and_then(|expr| lower_expr(expr))
+        .unwrap_or_else(noop);
+    let end = expr_range
+        .end
+        .as_ref()
+        .and_then(|expr| lower_expr(expr))
+        .unwrap_or_else(noop);
+    let inclusive = matches!(expr_range.limits, RangeLimits::Closed(_));
+
+    Some(json!({
+        "type": "TupleExpression",
+        "elements": [start, end, literal_boolean(inclusive)],
+        "modifiable": false,
+    }))
+}
+
 fn lower_if(expr_if: &ExprIf) -> Option<Value> {
     let test = lower_expr(&expr_if.cond)?;
     let consequent = lower_block(&expr_if.then_branch);
@@ -715,7 +737,10 @@ fn lower_match_pattern_test(pat: &Pat) -> Option<Value> {
         Pat::Path(pat_path) => Some(lower_syn_path(&pat_path.path)),
         Pat::TupleStruct(pat_tuple_struct) => Some(lower_syn_path(&pat_tuple_struct.path)),
         Pat::Struct(pat_struct) => Some(lower_syn_path(&pat_struct.path)),
-        Pat::Ident(pat_ident) => Some(identifier(pat_ident.ident.to_string())),
+        Pat::Ident(pat_ident) => pat_ident
+            .subpat
+            .as_ref()
+            .and_then(|(_, subpat)| lower_match_pattern_test(subpat)),
         Pat::Reference(pat_reference) => lower_match_pattern_test(&pat_reference.pat),
         Pat::Wild(_) => None,
         _ => None,
@@ -741,7 +766,7 @@ fn lower_range_binding(pat: &Pat) -> (Option<Value>, Option<Value>) {
             let mut names = tuple
                 .elems
                 .iter()
-                .filter_map(extract_binding_name)
+                .filter_map(extract_range_binding_name)
                 .map(identifier)
                 .collect::<Vec<_>>();
             match names.len() {
@@ -752,9 +777,19 @@ fn lower_range_binding(pat: &Pat) -> (Option<Value>, Option<Value>) {
         }
         Pat::Reference(pat_reference) => lower_range_binding(&pat_reference.pat),
         _ => {
-            let value = extract_binding_name(pat).map(identifier);
+            let value = extract_range_binding_name(pat).map(identifier);
             (None, value)
         }
+    }
+}
+
+fn extract_range_binding_name(pat: &Pat) -> Option<String> {
+    match pat {
+        Pat::Wild(_) => None,
+        Pat::Ident(pat_ident) => Some(pat_ident.ident.to_string()),
+        Pat::Reference(pat_reference) => extract_range_binding_name(&pat_reference.pat),
+        Pat::Type(pat_type) => extract_range_binding_name(&pat_type.pat),
+        _ => extract_binding_name(pat).and_then(|name| if name == "_" { None } else { Some(name) }),
     }
 }
 
@@ -988,6 +1023,12 @@ fn null_literal() -> Value {
         "type": "Literal",
         "value": Value::Null,
         "literalType": "null",
+    })
+}
+
+fn noop() -> Value {
+    json!({
+        "type": "Noop",
     })
 }
 

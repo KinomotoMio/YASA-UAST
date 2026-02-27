@@ -374,6 +374,114 @@ fn single_mode_lowers_unary_negation_in_initializer() {
     );
 }
 
+#[test]
+fn single_mode_keeps_for_loop_with_range_expression() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_file = temp.path().join("for_range.rs");
+    fs::write(
+        &source_file,
+        "fn f() { for i in 0..3 { if i == 1 { break; } } }\n",
+    )
+    .expect("write source");
+    let output_file = temp.path().join("out").join("for_range.json");
+
+    let out = run_cli(&[
+        "-rootDir",
+        source_file.to_str().expect("utf8 path"),
+        "-output",
+        output_file.to_str().expect("utf8 path"),
+        "-single",
+    ]);
+    assert!(
+        out.status.success(),
+        "cli failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json_bytes = fs::read(&output_file).expect("read output");
+    let json: Value = serde_json::from_slice(&json_bytes).expect("valid json");
+    let range_stmt = find_first_node_by_type(&json, "RangeStatement").expect("RangeStatement");
+    let right = range_stmt
+        .get("right")
+        .and_then(Value::as_object)
+        .expect("RangeStatement.right object");
+    assert_eq!(
+        right.get("type").and_then(Value::as_str),
+        Some("TupleExpression")
+    );
+}
+
+#[test]
+fn single_mode_treats_match_binding_pattern_as_default_case() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_file = temp.path().join("match_binding.rs");
+    fs::write(
+        &source_file,
+        "fn f(v: i32) { match v { x => return x, } }\n",
+    )
+    .expect("write source");
+    let output_file = temp.path().join("out").join("match_binding.json");
+
+    let out = run_cli(&[
+        "-rootDir",
+        source_file.to_str().expect("utf8 path"),
+        "-output",
+        output_file.to_str().expect("utf8 path"),
+        "-single",
+    ]);
+    assert!(
+        out.status.success(),
+        "cli failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json_bytes = fs::read(&output_file).expect("read output");
+    let json: Value = serde_json::from_slice(&json_bytes).expect("valid json");
+    let switch_stmt = find_first_node_by_type(&json, "SwitchStatement").expect("SwitchStatement");
+    let first_case = switch_stmt
+        .get("cases")
+        .and_then(Value::as_array)
+        .and_then(|cases| cases.first())
+        .expect("first case");
+    assert!(
+        first_case.get("test").is_some_and(Value::is_null),
+        "binding pattern should lower to default case (null test)"
+    );
+}
+
+#[test]
+fn single_mode_ignores_wildcard_in_for_tuple_binding() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_file = temp.path().join("for_tuple_wild.rs");
+    fs::write(
+        &source_file,
+        "fn g(xs: Vec<(i32, i32)>) { for (i, _) in xs { if i > 0 { continue; } } }\n",
+    )
+    .expect("write source");
+    let output_file = temp.path().join("out").join("for_tuple_wild.json");
+
+    let out = run_cli(&[
+        "-rootDir",
+        source_file.to_str().expect("utf8 path"),
+        "-output",
+        output_file.to_str().expect("utf8 path"),
+        "-single",
+    ]);
+    assert!(
+        out.status.success(),
+        "cli failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json_bytes = fs::read(&output_file).expect("read output");
+    let json: Value = serde_json::from_slice(&json_bytes).expect("valid json");
+    let serialized = serde_json::to_string(&json).expect("serialize output");
+    assert!(
+        !serialized.contains("\"name\":\"_\""),
+        "wildcard binding should not produce identifier '_' in UAST"
+    );
+}
+
 fn fixture_path(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("testdata")
@@ -445,5 +553,25 @@ fn has_assignment_operator(value: &Value, operator: &str) -> bool {
             .iter()
             .any(|child| has_assignment_operator(child, operator)),
         _ => false,
+    }
+}
+
+fn find_first_node_by_type<'a>(value: &'a Value, target_type: &str) -> Option<&'a Value> {
+    match value {
+        Value::Object(map) => {
+            if map
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|node_type| node_type == target_type)
+            {
+                return Some(value);
+            }
+            map.values()
+                .find_map(|child| find_first_node_by_type(child, target_type))
+        }
+        Value::Array(items) => items
+            .iter()
+            .find_map(|child| find_first_node_by_type(child, target_type)),
+        _ => None,
     }
 }
