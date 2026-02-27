@@ -12,8 +12,9 @@ use syn::{
     Arm, BinOp, Block, Expr, ExprAssign, ExprBinary, ExprBlock, ExprBreak, ExprCall, ExprContinue,
     ExprField, ExprForLoop, ExprIf, ExprLit, ExprLoop, ExprMatch, ExprMethodCall, ExprPath,
     ExprRange, ExprReference, ExprReturn, ExprTuple, ExprUnary, ExprWhile, Field, Fields, FnArg,
-    Item, ItemFn, ItemStruct, Lit, Local, Pat, PatTuple, RangeLimits, ReturnType, Stmt, Type, UnOp,
-    Visibility,
+    ImplItem, Item, ItemEnum, ItemFn, ItemImpl, ItemMod, ItemStruct, ItemTrait, ItemUse, Lit,
+    Local, Pat, PatTuple, RangeLimits, ReturnType, Signature, Stmt, TraitItem, Type, UnOp, UseTree,
+    Variant, Visibility,
 };
 
 const SINGLE_FILE_PACKAGE_NAME: &str = "__single__";
@@ -296,6 +297,11 @@ fn lower_item(item: &Item) -> Option<Value> {
     match item {
         Item::Fn(item_fn) => Some(lower_function(item_fn)),
         Item::Struct(item_struct) => Some(lower_struct(item_struct)),
+        Item::Use(item_use) => lower_use(item_use),
+        Item::Mod(item_mod) => Some(lower_mod(item_mod)),
+        Item::Trait(item_trait) => Some(lower_trait(item_trait)),
+        Item::Enum(item_enum) => Some(lower_enum(item_enum)),
+        Item::Impl(item_impl) => Some(lower_impl(item_impl)),
         _ => None,
     }
 }
@@ -321,18 +327,29 @@ fn lower_function(item_fn: &ItemFn) -> Value {
 }
 
 fn function_modifiers(item_fn: &ItemFn) -> Vec<String> {
+    signature_modifiers(
+        &item_fn.sig,
+        matches!(item_fn.vis, Visibility::Public(_)),
+        &[],
+    )
+}
+
+fn signature_modifiers(sig: &Signature, is_pub: bool, extras: &[&str]) -> Vec<String> {
     let mut modifiers = Vec::new();
-    if matches!(item_fn.vis, Visibility::Public(_)) {
+    if is_pub {
         modifiers.push("pub".to_string());
     }
-    if item_fn.sig.constness.is_some() {
+    if sig.constness.is_some() {
         modifiers.push("const".to_string());
     }
-    if item_fn.sig.asyncness.is_some() {
+    if sig.asyncness.is_some() {
         modifiers.push("async".to_string());
     }
-    if item_fn.sig.unsafety.is_some() {
+    if sig.unsafety.is_some() {
         modifiers.push("unsafe".to_string());
+    }
+    for modifier in extras {
+        modifiers.push((*modifier).to_string());
     }
     modifiers
 }
@@ -378,6 +395,257 @@ fn lower_unnamed_struct_field(index: usize, field: &Field) -> Value {
         false,
         false,
     )
+}
+
+fn lower_use(item_use: &ItemUse) -> Option<Value> {
+    let mut bindings = Vec::new();
+    flatten_use_tree("", &item_use.tree, &mut bindings);
+    let mut declarations = bindings
+        .into_iter()
+        .map(|(from_path, local_name)| {
+            variable_declaration(
+                identifier(local_name),
+                Some(import_expression(from_path)),
+                dynamic_type(),
+                true,
+                false,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    match declarations.len() {
+        0 => None,
+        1 => declarations.pop(),
+        _ => Some(sequence(declarations)),
+    }
+}
+
+fn flatten_use_tree(prefix: &str, tree: &UseTree, out: &mut Vec<(String, String)>) {
+    match tree {
+        UseTree::Path(path) => {
+            let next_prefix = if prefix.is_empty() {
+                path.ident.to_string()
+            } else {
+                format!("{prefix}::{}", path.ident)
+            };
+            flatten_use_tree(&next_prefix, &path.tree, out);
+        }
+        UseTree::Name(name) => {
+            if name.ident == "self" && !prefix.is_empty() {
+                let local = prefix.rsplit("::").next().unwrap_or(prefix).to_string();
+                out.push((prefix.to_string(), local));
+            } else {
+                let from_path = if prefix.is_empty() {
+                    name.ident.to_string()
+                } else {
+                    format!("{prefix}::{}", name.ident)
+                };
+                out.push((from_path, name.ident.to_string()));
+            }
+        }
+        UseTree::Rename(rename) => {
+            let from_path = if prefix.is_empty() {
+                rename.ident.to_string()
+            } else {
+                format!("{prefix}::{}", rename.ident)
+            };
+            out.push((from_path, rename.rename.to_string()));
+        }
+        UseTree::Glob(_) => {
+            let from_path = if prefix.is_empty() {
+                "*".to_string()
+            } else {
+                format!("{prefix}::*")
+            };
+            out.push((from_path, "*".to_string()));
+        }
+        UseTree::Group(group) => {
+            for item in &group.items {
+                flatten_use_tree(prefix, item, out);
+            }
+        }
+    }
+}
+
+fn lower_mod(item_mod: &ItemMod) -> Value {
+    let body = item_mod
+        .content
+        .as_ref()
+        .map(|(_, items)| items.iter().filter_map(lower_item).collect::<Vec<_>>())
+        .unwrap_or_default();
+    json!({
+        "type": "ClassDefinition",
+        "id": identifier(item_mod.ident.to_string()),
+        "body": body,
+        "supers": [],
+    })
+}
+
+fn lower_trait(item_trait: &ItemTrait) -> Value {
+    let mut supers = Vec::new();
+    for bound in &item_trait.supertraits {
+        if let syn::TypeParamBound::Trait(trait_bound) = bound {
+            supers.push(lower_syn_path(&trait_bound.path));
+        }
+    }
+
+    let body = item_trait
+        .items
+        .iter()
+        .filter_map(lower_trait_item)
+        .collect::<Vec<_>>();
+    let mut class_def = json!({
+        "type": "ClassDefinition",
+        "id": identifier(item_trait.ident.to_string()),
+        "body": body,
+        "supers": supers,
+    });
+    class_def["_meta"] = json!({ "isInterface": true });
+    class_def
+}
+
+fn lower_trait_item(item: &TraitItem) -> Option<Value> {
+    match item {
+        TraitItem::Fn(method) => Some(lower_signature_function(
+            &method.sig,
+            false,
+            method.default.as_ref(),
+            if method.default.is_some() {
+                &[]
+            } else {
+                &["abstract"]
+            },
+        )),
+        TraitItem::Const(item_const) => Some(variable_declaration(
+            identifier(item_const.ident.to_string()),
+            item_const
+                .default
+                .as_ref()
+                .and_then(|(_, expr)| lower_expr(expr)),
+            dynamic_type(),
+            item_const.default.is_some(),
+            false,
+        )),
+        TraitItem::Type(item_type) => Some(variable_declaration(
+            identifier(item_type.ident.to_string()),
+            None,
+            dynamic_type(),
+            false,
+            false,
+        )),
+        _ => None,
+    }
+}
+
+fn lower_enum(item_enum: &ItemEnum) -> Value {
+    let body = item_enum
+        .variants
+        .iter()
+        .map(|variant| lower_enum_variant(variant, &item_enum.ident.to_string()))
+        .collect::<Vec<_>>();
+    json!({
+        "type": "ClassDefinition",
+        "id": identifier(item_enum.ident.to_string()),
+        "body": body,
+        "supers": [],
+    })
+}
+
+fn lower_enum_variant(variant: &Variant, enum_name: &str) -> Value {
+    let init = variant
+        .discriminant
+        .as_ref()
+        .and_then(|(_, expr)| lower_expr(expr));
+    let cloned = init.is_some();
+    variable_declaration(
+        identifier(variant.ident.to_string()),
+        init,
+        dynamic_type_with_id(Some(enum_name.to_string())),
+        cloned,
+        false,
+    )
+}
+
+fn lower_impl(item_impl: &ItemImpl) -> Value {
+    let id = identifier(extract_impl_self_name(item_impl.self_ty.as_ref()));
+    let supers = item_impl
+        .trait_
+        .as_ref()
+        .map(|(_, trait_path, _)| vec![lower_syn_path(trait_path)])
+        .unwrap_or_default();
+    let body = item_impl
+        .items
+        .iter()
+        .filter_map(lower_impl_item)
+        .collect::<Vec<_>>();
+    json!({
+        "type": "ClassDefinition",
+        "id": id,
+        "body": body,
+        "supers": supers,
+    })
+}
+
+fn extract_impl_self_name(self_ty: &Type) -> String {
+    match self_ty {
+        Type::Path(type_path) => type_path
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string())
+            .unwrap_or_else(|| "__impl__".to_string()),
+        Type::Reference(reference) => extract_impl_self_name(&reference.elem),
+        _ => "__impl__".to_string(),
+    }
+}
+
+fn lower_impl_item(item: &ImplItem) -> Option<Value> {
+    match item {
+        ImplItem::Fn(method) => Some(lower_signature_function(
+            &method.sig,
+            matches!(method.vis, Visibility::Public(_)),
+            Some(&method.block),
+            &[],
+        )),
+        ImplItem::Const(item_const) => Some(variable_declaration(
+            identifier(item_const.ident.to_string()),
+            lower_expr(&item_const.expr),
+            dynamic_type(),
+            true,
+            false,
+        )),
+        ImplItem::Type(item_type) => Some(variable_declaration(
+            identifier(item_type.ident.to_string()),
+            None,
+            dynamic_type(),
+            false,
+            false,
+        )),
+        _ => None,
+    }
+}
+
+fn lower_signature_function(
+    sig: &Signature,
+    is_pub: bool,
+    body: Option<&Block>,
+    extras: &[&str],
+) -> Value {
+    let parameters = sig
+        .inputs
+        .iter()
+        .filter_map(lower_fn_arg)
+        .collect::<Vec<_>>();
+    let return_type = lower_return_type(&sig.output);
+    let body = body.map(lower_block).unwrap_or_else(noop);
+    json!({
+        "type": "FunctionDefinition",
+        "id": identifier(sig.ident.to_string()),
+        "parameters": parameters,
+        "returnType": return_type,
+        "body": body,
+        "modifiers": signature_modifiers(sig, is_pub, extras),
+    })
 }
 
 fn lower_fn_arg(arg: &FnArg) -> Option<Value> {
@@ -1026,6 +1294,19 @@ fn variable_declaration(
         "cloned": cloned,
         "varType": var_type,
         "variableParam": variable_param,
+    })
+}
+
+fn import_expression(from: String) -> Value {
+    json!({
+        "type": "ImportExpression",
+        "from": {
+            "type": "Literal",
+            "value": from,
+            "literalType": "string",
+        },
+        "local": Value::Null,
+        "imported": Value::Null,
     })
 }
 

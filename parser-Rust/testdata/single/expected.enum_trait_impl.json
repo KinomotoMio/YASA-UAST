@@ -1,0 +1,193 @@
+{
+  "packageInfo": {
+    "pathName": "/",
+    "files": {
+      "__FILE__": {
+        "node": {
+          "type": "CompileUnit",
+          "body": [
+            {
+              "body": [
+                {
+                  "cloned": false,
+                  "id": {
+                    "name": "Ready",
+                    "type": "Identifier"
+                  },
+                  "init": null,
+                  "type": "VariableDeclaration",
+                  "varType": {
+                    "id": {
+                      "name": "Status",
+                      "type": "Identifier"
+                    },
+                    "type": "DynamicType",
+                    "typeArguments": null
+                  },
+                  "variableParam": false
+                },
+                {
+                  "cloned": true,
+                  "id": {
+                    "name": "Busy",
+                    "type": "Identifier"
+                  },
+                  "init": {
+                    "literalType": "number",
+                    "type": "Literal",
+                    "value": 2
+                  },
+                  "type": "VariableDeclaration",
+                  "varType": {
+                    "id": {
+                      "name": "Status",
+                      "type": "Identifier"
+                    },
+                    "type": "DynamicType",
+                    "typeArguments": null
+                  },
+                  "variableParam": false
+                }
+              ],
+              "id": {
+                "name": "Status",
+                "type": "Identifier"
+              },
+              "supers": [],
+              "type": "ClassDefinition"
+            },
+            {
+              "_meta": {
+                "isInterface": true
+              },
+              "body": [
+                {
+                  "body": {
+                    "type": "Noop"
+                  },
+                  "id": {
+                    "name": "id",
+                    "type": "Identifier"
+                  },
+                  "modifiers": [
+                    "abstract"
+                  ],
+                  "parameters": [],
+                  "returnType": {
+                    "id": {
+                      "name": "i32",
+                      "type": "Identifier"
+                    },
+                    "type": "DynamicType",
+                    "typeArguments": null
+                  },
+                  "type": "FunctionDefinition"
+                },
+                {
+                  "body": {
+                    "body": [
+                      {
+                        "literalType": "number",
+                        "type": "Literal",
+                        "value": 1
+                      }
+                    ],
+                    "id": null,
+                    "type": "ScopedStatement"
+                  },
+                  "id": {
+                    "name": "run",
+                    "type": "Identifier"
+                  },
+                  "modifiers": [],
+                  "parameters": [],
+                  "returnType": {
+                    "id": {
+                      "name": "i32",
+                      "type": "Identifier"
+                    },
+                    "type": "DynamicType",
+                    "typeArguments": null
+                  },
+                  "type": "FunctionDefinition"
+                }
+              ],
+              "id": {
+                "name": "Worker",
+                "type": "Identifier"
+              },
+              "supers": [
+                {
+                  "name": "Send",
+                  "type": "Identifier"
+                }
+              ],
+              "type": "ClassDefinition"
+            },
+            {
+              "body": [],
+              "id": {
+                "name": "Agent",
+                "type": "Identifier"
+              },
+              "supers": [],
+              "type": "ClassDefinition"
+            },
+            {
+              "body": [
+                {
+                  "body": {
+                    "body": [
+                      {
+                        "literalType": "number",
+                        "type": "Literal",
+                        "value": 7
+                      }
+                    ],
+                    "id": null,
+                    "type": "ScopedStatement"
+                  },
+                  "id": {
+                    "name": "id",
+                    "type": "Identifier"
+                  },
+                  "modifiers": [],
+                  "parameters": [],
+                  "returnType": {
+                    "id": {
+                      "name": "i32",
+                      "type": "Identifier"
+                    },
+                    "type": "DynamicType",
+                    "typeArguments": null
+                  },
+                  "type": "FunctionDefinition"
+                }
+              ],
+              "id": {
+                "name": "Agent",
+                "type": "Identifier"
+              },
+              "supers": [
+                {
+                  "name": "Worker",
+                  "type": "Identifier"
+                }
+              ],
+              "type": "ClassDefinition"
+            }
+          ],
+          "language": "rust",
+          "languageVersion": "",
+          "uri": "__FILE__",
+          "version": ""
+        },
+        "packageName": "__single__"
+      }
+    },
+    "subs": {}
+  },
+  "moduleName": "__single_module__",
+  "cargoTomlPath": "",
+  "numOfCargoToml": 0
+}
