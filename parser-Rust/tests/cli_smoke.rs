@@ -681,7 +681,10 @@ fn single_mode_ignores_wildcard_in_let_tuple_pattern() {
         .get("init")
         .and_then(Value::as_object)
         .expect("x init should be present");
-    assert_eq!(x_init.get("type").and_then(Value::as_str), Some("MemberAccess"));
+    assert_eq!(
+        x_init.get("type").and_then(Value::as_str),
+        Some("MemberAccess")
+    );
     assert_eq!(x_init.get("computed").and_then(Value::as_bool), Some(true));
     assert_eq!(
         x_init
