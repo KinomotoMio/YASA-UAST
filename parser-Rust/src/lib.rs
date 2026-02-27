@@ -313,16 +313,13 @@ fn walk_for_cargo_toml(dir: &Path, found_paths: &mut Vec<PathBuf>) -> Result<(),
 }
 
 fn should_skip_dir(name: Option<&OsStr>) -> bool {
-    matches!(
-        name.and_then(OsStr::to_str),
-        Some(".git")
-            | Some(".hg")
-            | Some(".svn")
-            | Some("target")
-            | Some("node_modules")
-            | Some("vendor")
-            | Some(".venv")
-    )
+    let Some(name) = name.and_then(OsStr::to_str) else {
+        return false;
+    };
+    if name.starts_with('.') {
+        return true;
+    }
+    matches!(name, "target" | "node_modules" | "vendor" | ".venv")
 }
 
 fn manifest_rel_path(root_dir: &Path, manifest_path: &Path) -> String {
@@ -345,7 +342,8 @@ fn parse_package_name_from_manifest(manifest_path: &Path) -> Result<Option<Strin
 
     let mut in_package_section = false;
     for raw_line in content.lines() {
-        let line_no_comment = raw_line.split('#').next().unwrap_or_default().trim();
+        let line_no_comment = strip_comment_outside_quotes(raw_line);
+        let line_no_comment = line_no_comment.trim();
         if line_no_comment.is_empty() {
             continue;
         }
@@ -365,14 +363,60 @@ fn parse_package_name_from_manifest(manifest_path: &Path) -> Result<Option<Strin
         if key.trim() != "name" {
             continue;
         }
-        let parsed = value.trim().trim_matches('"').trim_matches('\'').trim();
+        let parsed = parse_toml_string_value(value.trim());
         if parsed.is_empty() {
             return Ok(None);
         }
-        return Ok(Some(parsed.to_string()));
+        return Ok(Some(parsed));
     }
 
     Ok(None)
+}
+
+fn strip_comment_outside_quotes(line: &str) -> String {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+
+    for (idx, ch) in line.char_indices() {
+        if in_double {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                '"' => in_double = false,
+                _ => {}
+            }
+            continue;
+        }
+        if in_single {
+            if ch == '\'' {
+                in_single = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_double = true,
+            '\'' => in_single = true,
+            '#' => return line[..idx].to_string(),
+            _ => {}
+        }
+    }
+    line.to_string()
+}
+
+fn parse_toml_string_value(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.len() >= 2 {
+        let first = trimmed.as_bytes()[0] as char;
+        let last = trimmed.as_bytes()[trimmed.len() - 1] as char;
+        if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+            return trimmed[1..trimmed.len() - 1].to_string();
+        }
+    }
+    trimmed.to_string()
 }
 
 fn build_package_info(manifests: &[CargoManifestInfo]) -> PackagePathInfo {
@@ -483,5 +527,21 @@ mod tests {
             .expect("parse manifest")
             .expect("package name");
         assert_eq!(name, "demo_name");
+    }
+
+    #[test]
+    fn parse_package_name_keeps_hash_inside_quoted_name() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest = temp.path().join("Cargo.toml");
+        fs::write(
+            &manifest,
+            "[package]\nname = \"foo#bar\" # trailing comment\nversion = \"0.1.0\"\n",
+        )
+        .expect("write manifest");
+
+        let name = parse_package_name_from_manifest(&manifest)
+            .expect("parse manifest")
+            .expect("package name");
+        assert_eq!(name, "foo#bar");
     }
 }

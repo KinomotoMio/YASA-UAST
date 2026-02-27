@@ -161,6 +161,53 @@ fn project_mode_matches_golden_and_is_stable() {
     );
 }
 
+#[test]
+fn project_mode_skips_hidden_directories_when_discovering_manifests() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project_dir = temp.path().join("proj");
+    fs::create_dir_all(&project_dir).expect("create project dir");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        "[package]\nname = \"rootpkg\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write root manifest");
+
+    let hidden_manifest = project_dir.join(".cargo/registry/src/foo");
+    fs::create_dir_all(&hidden_manifest).expect("create hidden directory");
+    fs::write(
+        hidden_manifest.join("Cargo.toml"),
+        "[package]\nname = \"vendored\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write hidden manifest");
+
+    let output_file = temp.path().join("out").join("hidden-skip.json");
+    let out = run_cli(&[
+        "-rootDir",
+        project_dir.to_str().expect("utf8 path"),
+        "-output",
+        output_file.to_str().expect("utf8 path"),
+    ]);
+
+    assert!(
+        out.status.success(),
+        "cli failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json_bytes = fs::read(&output_file).expect("read output");
+    let json: Value = serde_json::from_slice(&json_bytes).expect("valid json");
+
+    assert_eq!(
+        json.get("moduleName").and_then(Value::as_str),
+        Some("rootpkg")
+    );
+    assert_eq!(
+        json.get("cargoTomlPath").and_then(Value::as_str),
+        Some("/Cargo.toml")
+    );
+    assert_eq!(json.get("numOfCargoToml").and_then(Value::as_u64), Some(1));
+}
+
 fn fixture_path(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("testdata")
