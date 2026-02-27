@@ -3,6 +3,7 @@ mod model;
 pub use model::{CompileUnit, NodeInfo, Output, PackagePathInfo, LANGUAGE};
 use std::collections::BTreeMap;
 use std::env;
+use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,6 +11,7 @@ use std::path::{Path, PathBuf};
 const SINGLE_FILE_PACKAGE_NAME: &str = "__single__";
 const SINGLE_FILE_MODULE_NAME: &str = "__single_module__";
 const UNKNOWN_MODULE_NAME: &str = "__unknown_module__";
+const CARGO_TOML_FILE_NAME: &str = "Cargo.toml";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliArgs {
@@ -232,14 +234,187 @@ fn parse_project(root_dir: &Path, output: &Path) -> Result<(), RunError> {
         });
     }
 
+    let mut manifests = discover_cargo_toml(root_dir)?;
+    manifests.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+
+    let module_name = manifests
+        .iter()
+        .find_map(|m| m.package_name.clone())
+        .unwrap_or_else(|| UNKNOWN_MODULE_NAME.to_string());
+    let cargo_toml_path = manifests
+        .first()
+        .map(|m| m.rel_path.clone())
+        .unwrap_or_default();
+    let num_of_cargo_toml = manifests.len();
+    let package_info = build_package_info(&manifests);
+
     let output_model = Output {
-        package_info: PackagePathInfo::empty_root(),
-        module_name: UNKNOWN_MODULE_NAME.to_string(),
-        cargo_toml_path: String::new(),
-        num_of_cargo_toml: 0,
+        package_info,
+        module_name,
+        cargo_toml_path,
+        num_of_cargo_toml,
     };
 
     write_output(output, &output_model)
+}
+
+#[derive(Debug)]
+struct CargoManifestInfo {
+    rel_path: String,
+    package_name: Option<String>,
+}
+
+fn discover_cargo_toml(root_dir: &Path) -> Result<Vec<CargoManifestInfo>, RunError> {
+    let mut found_paths = Vec::new();
+    walk_for_cargo_toml(root_dir, &mut found_paths)?;
+    let mut manifests = Vec::with_capacity(found_paths.len());
+    for manifest_path in found_paths {
+        let rel_path = manifest_rel_path(root_dir, &manifest_path);
+        let package_name = parse_package_name_from_manifest(&manifest_path)?;
+        manifests.push(CargoManifestInfo {
+            rel_path,
+            package_name,
+        });
+    }
+    Ok(manifests)
+}
+
+fn walk_for_cargo_toml(dir: &Path, found_paths: &mut Vec<PathBuf>) -> Result<(), RunError> {
+    let entries = fs::read_dir(dir).map_err(|source| RunError::Io {
+        context: format!("failed to read directory {}", dir.display()),
+        source,
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|source| RunError::Io {
+            context: format!("failed to read directory entry in {}", dir.display()),
+            source,
+        })?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|source| RunError::Io {
+            context: format!("failed to inspect file type {}", path.display()),
+            source,
+        })?;
+
+        if file_type.is_dir() {
+            if should_skip_dir(path.file_name()) {
+                continue;
+            }
+            walk_for_cargo_toml(&path, found_paths)?;
+            continue;
+        }
+
+        if file_type.is_file() && path.file_name() == Some(OsStr::new(CARGO_TOML_FILE_NAME)) {
+            found_paths.push(path);
+        }
+    }
+
+    Ok(())
+}
+
+fn should_skip_dir(name: Option<&OsStr>) -> bool {
+    matches!(
+        name.and_then(OsStr::to_str),
+        Some(".git")
+            | Some(".hg")
+            | Some(".svn")
+            | Some("target")
+            | Some("node_modules")
+            | Some("vendor")
+            | Some(".venv")
+    )
+}
+
+fn manifest_rel_path(root_dir: &Path, manifest_path: &Path) -> String {
+    let rel = manifest_path
+        .strip_prefix(root_dir)
+        .unwrap_or(manifest_path);
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+    if rel_str.starts_with('/') {
+        rel_str
+    } else {
+        format!("/{rel_str}")
+    }
+}
+
+fn parse_package_name_from_manifest(manifest_path: &Path) -> Result<Option<String>, RunError> {
+    let content = fs::read_to_string(manifest_path).map_err(|source| RunError::Io {
+        context: format!("failed to read manifest {}", manifest_path.display()),
+        source,
+    })?;
+
+    let mut in_package_section = false;
+    for raw_line in content.lines() {
+        let line_no_comment = raw_line.split('#').next().unwrap_or_default().trim();
+        if line_no_comment.is_empty() {
+            continue;
+        }
+
+        if line_no_comment.starts_with('[') && line_no_comment.ends_with(']') {
+            in_package_section = line_no_comment == "[package]";
+            continue;
+        }
+
+        if !in_package_section {
+            continue;
+        }
+
+        let Some((key, value)) = line_no_comment.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "name" {
+            continue;
+        }
+        let parsed = value.trim().trim_matches('"').trim_matches('\'').trim();
+        if parsed.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(parsed.to_string()));
+    }
+
+    Ok(None)
+}
+
+fn build_package_info(manifests: &[CargoManifestInfo]) -> PackagePathInfo {
+    let mut root = PackagePathInfo::empty_root();
+    for manifest in manifests {
+        insert_manifest_into_tree(&mut root, manifest);
+    }
+    root
+}
+
+fn insert_manifest_into_tree(root: &mut PackagePathInfo, manifest: &CargoManifestInfo) {
+    let mut node = root;
+    let parts: Vec<&str> = manifest
+        .rel_path
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return;
+    }
+    for part in &parts[..parts.len().saturating_sub(1)] {
+        node = node
+            .subs
+            .entry((*part).to_string())
+            .or_insert_with(|| PackagePathInfo {
+                path_name: (*part).to_string(),
+                files: BTreeMap::new(),
+                subs: BTreeMap::new(),
+            });
+    }
+
+    let package_name = manifest
+        .package_name
+        .clone()
+        .unwrap_or_else(|| UNKNOWN_MODULE_NAME.to_string());
+    node.files.insert(
+        manifest.rel_path.clone(),
+        NodeInfo {
+            node: CompileUnit::empty(manifest.rel_path.clone()),
+            package_name,
+        },
+    );
 }
 
 fn write_output(output_path: &Path, output: &Output) -> Result<(), RunError> {
@@ -292,5 +467,21 @@ mod tests {
         let err = parse_args_from(args).expect_err("flag used as value should fail");
         assert!(matches!(err, ParseArgsError::Message(_)));
         assert!(err.to_string().contains("Missing value for '-rootDir'"));
+    }
+
+    #[test]
+    fn parse_package_name_reads_package_section_name() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest = temp.path().join("Cargo.toml");
+        fs::write(
+            &manifest,
+            "[workspace]\nmembers=[\"a\"]\n\n[package]\nname = \"demo_name\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("write manifest");
+
+        let name = parse_package_name_from_manifest(&manifest)
+            .expect("parse manifest")
+            .expect("package name");
+        assert_eq!(name, "demo_name");
     }
 }
