@@ -379,6 +379,39 @@ fn single_mode_preserves_wildcard_let_initializer_call() {
 }
 
 #[test]
+fn single_mode_skips_wildcard_function_parameters() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_file = temp.path().join("wild_fn_param.rs");
+    fs::write(&source_file, "fn f(_: i32, x: i32) -> i32 { x }\n").expect("write source");
+    let output_file = temp.path().join("out").join("wild_fn_param.json");
+
+    let out = run_cli(&[
+        "-rootDir",
+        source_file.to_str().expect("utf8 path"),
+        "-output",
+        output_file.to_str().expect("utf8 path"),
+        "-single",
+    ]);
+    assert!(
+        out.status.success(),
+        "cli failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json_bytes = fs::read(&output_file).expect("read output");
+    let json: Value = serde_json::from_slice(&json_bytes).expect("valid json");
+    let serialized = serde_json::to_string(&json).expect("serialize output");
+    assert!(
+        !serialized.contains("\"name\":\"_\""),
+        "wildcard function parameter should not produce identifier '_' in UAST"
+    );
+    assert!(
+        serialized.contains("\"name\":\"x\""),
+        "non-wildcard parameter should remain in lowered output"
+    );
+}
+
+#[test]
 fn single_mode_lowers_compound_assignment_operator() {
     let temp = tempfile::tempdir().expect("tempdir");
     let source_file = temp.path().join("assign_op.rs");
